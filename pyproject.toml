@@ -7,12 +7,12 @@ build-backend = "setuptools.build_meta"
 name = "py3langid"
 description = "Fork of the language identification tool langid.py, featuring a modernized codebase and faster execution times."
 readme = "README.rst"
-license = { text = "BSD" }
+license = "BSD-3-Clause"
 dynamic = ["version"]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
   {name = "Marco Lui"},
-  {name = "Adrien Barbaresi", email = "barbaresi@bbaw.de"}
+  {name = "Adrien Barbaresi"}
 ]
 keywords=[
     "language detection",
@@ -21,31 +21,26 @@ keywords=[
     "langid.py"
 ]
 classifiers = [
-    # As from http://pypi.python.org/pypi?%3Aaction=list_classifiers
-    'Development Status :: 5 - Production/Stable',
-    #'Development Status :: 6 - Mature',
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Linguistic",
 ]
 dependencies = [
-    "numpy >= 2.0.0 ; python_version >= '3.9'",
-    "numpy >= 1.24.3 ; python_version == '3.8'",
+    "numpy >= 2.0.0",
 ]
 
 # https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
