@@ -122,7 +122,7 @@ def test_cli_batch(tmp_path):
     fr.write_text('Ceci est un texte en français pour les tests.', encoding='utf8')
     paths = f'{en}\n{fr}\n'.encode()
     out = subprocess.check_output(['langid', '-b'], input=paths).decode()
-    results = {row[0]: row[1] for row in csv.reader(out.strip().splitlines())}
+    results = {row[0]: row[1] for row in csv.reader(out.strip().splitlines()) if row}
     assert results[str(en)] == 'en' and results[str(fr)] == 'fr'
 
 

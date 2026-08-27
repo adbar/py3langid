@@ -331,7 +331,7 @@ def main():
                 if p and Path(p).is_file():
                     yield p
 
-        writer = csv.writer(sys.stdout)
+        writer = csv.writer(sys.stdout, lineterminator='\n')
         with Pool(initializer=_init_worker,
                   initargs=(options.model, options.normalize, langs)) as pool:
             if options.dist:
