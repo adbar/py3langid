@@ -103,3 +103,24 @@ ENV/
 
 # IDE settings
 .vscode/
+
+# training artifacts (large, regenerable or archival)
+corpus/
+corpus.shards/
+corpus_extra/
+raw_downloads/
+model_out/
+archive/
+benchmarks/
+
+# uv
+uv.lock
+
+# AI assistants
+.claude/
+CLAUDE.local.md
+.cursor/
+.aider*
+.codex/
+.gemini/
+.github/copilot-instructions.md

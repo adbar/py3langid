@@ -66,23 +66,16 @@ More options:
     >>> from py3langid.langid import LanguageIdentifier, MODEL_FILE
 
     # subset of target languages
-    >>> identifier = LanguageIdentifier.from_pickled_model(MODEL_FILE)
+    >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE)
     >>> identifier.set_languages(['de', 'en', 'fr'])
     # this won't work well...
     >>> identifier.classify('这样不好')
     ('en', -81.831665)
 
     # normalization of probabilities to an interval between 0 and 1
-    >>> identifier = LanguageIdentifier.from_pickled_model(MODEL_FILE, norm_probs=True)
+    >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
     >>> identifier.classify('This should be enough text.')
     ('en', 1.0)
-
-
-Note: the Numpy data type for the feature vector has been changed to optimize for speed. If results are inconsistent, try restoring the original setting:
-
-.. code-block:: python
-
-    >>> langid.classify(text, datatype='uint32')
 
 
 On the command-line
@@ -298,7 +291,7 @@ probability normalization in library use, the user must instantiate their own
 ``LanguageIdentifier``. An example of such usage is as follows::
   
   >> from py3langid.langid import LanguageIdentifier, MODEL_FILE
-  >> identifier = LanguageIdentifier.from_pickled_model(MODEL_FILE, norm_probs=True)
+  >> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
   >> identifier.classify("This is a test")
   ('en', 0.9999999909903544)
 

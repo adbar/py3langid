@@ -1,0 +1,108 @@
+"""Per-source language code tables for the corpus gatherers."""
+
+# Tatoeba ISO 639-3 codes per target lang; missing/uncertain codes yield 0 docs and are logged.
+ISO3 = {
+    "af": "afr", "am": "amh", "an": "arg", "ar": "ara", "as": "asm", "az": "aze",
+    "arz": "arz", "ary": "ary",
+    "ba": "bak", "be": "bel", "bg": "bul", "bn": "ben", "br": "bre", "bs": "bos",
+    "ca": "cat", "crh": "crh", "cs": "ces", "cy": "cym",
+    "da": "dan", "de": "deu", "dz": "dzo",
+    "el": "ell", "en": "eng", "eo": "epo", "es": "spa", "et": "est", "eu": "eus",
+    "fa": "pes", "fi": "fin", "fo": "fao", "fr": "fra", "fy": "fry",
+    "ga": "gle", "gcf": "gcf", "gd": "gla", "gl": "glg", "gu": "guj",
+    "ha": "hau", "he": "heb", "hi": "hin", "hr": "hrv", "ht": "hat",
+    "hu": "hun", "hy": "hye",
+    "id": "ind", "ig": "ibo", "is": "isl", "it": "ita",
+    "ja": "jpn", "jv": "jav", "ka": "kat",
+    "kab": "kab", "kk": "kaz", "km": "khm", "kn": "kan", "ko": "kor",
+    "ku": "kmr", "ky": "kir",
+    "la": "lat", "lb": "ltz", "lg": "lug", "lij": "lij", "ln": "lin",
+    "lo": "lao", "lt": "lit", "ltg": "ltg", "lv": "lvs",
+    "mg": "mlg", "mk": "mkd", "ml": "mal", "mn": "mon", "mr": "mar",
+    "ms": "zsm", "mt": "mlt", "my": "mya",
+    "ne": "npi", "nl": "nld", "nn": "nno", "no": "nob", "nso": "nso",
+    "oc": "oci", "om": "orm", "or": "ori",
+    "pa": "pan", "pcm": "pcm", "pl": "pol", "ps": "pus", "pt": "por",
+    "qu": "que", "ro": "ron",
+    "ru": "rus", "rw": "kin", "sa": "san", "se": "sme", "si": "sin", "sk": "slk",
+    "sl": "slv", "sn": "sna", "so": "som", "sq": "sqi",
+    "sr": "srp", "st": "sot", "sv": "swe", "sw": "swh", "tg": "tgk",
+    "ta": "tam", "te": "tel", "th": "tha", "tk": "tuk", "tl": "tgl", "tr": "tur",
+    "tt": "tat", "ug": "uig", "uk": "ukr", "ur": "urd", "uz": "uzb",
+    "vec": "vec", "vi": "vie", "vo": "vol", "wa": "wln",
+    "wuu": "wuu",
+    "xh": "xho", "yo": "yor", "yue": "yue", "zh": "cmn", "zu": "zul",
+    # batch 4: CommonLID coverage
+    "ace": "ace", "bcl": "bcl", "ext": "ext",
+    # batch 5 (fro/ars/aeb rejected -- verdicts in sweep25 ledger)
+    "uzs": "uzs",
+    "fuv": "fuv", "gcr": "gcr", "gom": "gom", "grc": "grc",
+    "gug": "gug", "hbo": "hbo", "kik": "kik",
+}
+CC100_CODE = {"zh": "zh-Hans"}
+# cc100 has no data for: tt, ba, vec, tk, sn, st, nso, kab, crh
+# nb is not gathered: it duplicated 'no' (Bokmål) and the two classes split
+# the same language arbitrarily. Tatoeba nob feeds 'no' (decision 2026-08-26).
+WIKI_CODE = {
+    "yue": "zh_yue",  # Cantonese wiki is at zh-yue.wikipedia.org
+    "gug": "gn", "kik": "ki", "fuv": "ff",  # batch 4
+}
+
+# Leipzig Corpora Collection: lang -> archive name (news preferred, wiki fallback).
+# Scanned 2026-08-25; 7 langs have no Leipzig corpus (dz, km, ku, lo, rw, xh, zu).
+LEIPZIG_NAME = {
+    "af": "afr_news_2020_30K", "am": "amh_wikipedia_2021_30K",
+    "arz": "arz_wikipedia_2021_100K",
+    "an": "arg_wikipedia_2021_30K", "ar": "ara_news_2022_1M",
+    "as": "asm_wikipedia_2021_100K", "az": "aze_news_2020_30K",
+    "ba": "bak_wikipedia_2021_30K",
+    "be": "bel_news_2020_100K", "bg": "bul_news_2022_1M",
+    "bn": "ben_news_2020_300K", "br": "bre_wikipedia_2021_100K",
+    "bs": "bos_news_2020_300K", "ca": "cat_news_2022_300K",
+    "cs": "ces_news_2023_1M", "cy": "cym_wikipedia_2021_100K",
+    "da": "dan_news_2022_300K", "de": "deu_news_2023_1M",
+    "el": "ell_news_2023_1M", "en": "eng_news_2023_1M",
+    "eo": "epo_wikipedia_2021_300K", "es": "spa_news_2023_1M",
+    "et": "est_news_2022_300K", "eu": "eus_news_2020_30K",
+    "fa": "fas_news_2023_1M", "fi": "fin_news_2022_1M",
+    "fo": "fao_news_2020_30K", "fr": "fra_news_2023_1M",
+    "fy": "fry_wikipedia_2021_100K",
+    "ga": "gle_wikipedia_2021_30K", "gl": "glg_wikipedia_2021_300K",
+    "gu": "guj_news_2020_30K", "ha": "hau_wikipedia_2021_30K",
+    "he": "heb_news_2020_1M",
+    "hi": "hin_news_2022_1M", "hr": "hrv_news_2020_1M",
+    "ht": "hat_wikipedia_2021_30K", "hu": "hun_news_2023_1M",
+    "hy": "hye_news_2021_30K", "id": "ind_news_2023_1M",
+    "is": "isl_news_2020_30K", "it": "ita_news_2023_1M",
+    "ja": "jpn_news_2023_100K", "jv": "jav_wikipedia_2021_100K",
+    "ka": "kat_news_2020_100K", "kk": "kaz_news_2020_30K",
+    "kn": "kan_wikipedia_2021_300K", "ko": "kor_news_2022_1M",
+    "ky": "kir_wikipedia_2021_300K", "la": "lat_wikipedia_2021_100K",
+    "lb": "ltz_wikipedia_2021_100K", "lt": "lit_news_2020_1M",
+    "lv": "lav_news_2020_300K", "mg": "plt_wikipedia_2021_100K",
+    "mk": "mkd_news_2020_100K", "ml": "mal_wikipedia_2021_300K",
+    "mn": "mon_news_2020_100K", "mr": "mar_news_2020_300K",
+    "ms": "msa_news_2019_100K", "mt": "mlt_news_2020_30K",
+    "ne": "nep_news_2020_300K", "nl": "nld_news_2023_1M",
+    "nn": "nno_wikipedia_2021_300K", "no": "nob_newscrawl_2019_1M",
+    "oc": "oci_wikipedia_2021_100K", "or": "ori_wikipedia_2021_100K",
+    "pa": "pan_wikipedia_2021_300K", "pl": "pol_news_2023_1M",
+    "ps": "pus_news_2020_100K", "pt": "por_news_2023_1M",
+    "qu": "que_wikipedia_2021_10K", "ro": "ron_news_2022_1M",
+    "ru": "rus_news_2023_1M", "sa": "san_wikipedia_2021_100K",
+    "se": "sme_wikipedia_2021_10K",
+    "si": "sin_wikipedia_2021_100K", "sk": "slk_news_2020_100K",
+    "sl": "slv_news_2020_1M", "sq": "sqi_news_2020_1M",
+    "sr": "srp_news_2023_30K", "sv": "swe_news_2023_1M",
+    "sw": "swa_news_2020_30K", "ta": "tam_news_2020_100K",
+    "te": "tel_news_2020_100K", "tg": "tgk_wikipedia_2021_100K",
+    "th": "tha_news_2020_30K",
+    "tk": "tuk_wikipedia_2021_30K", "tl": "tgl_news_2020_30K",
+    "tr": "tur_news_2023_1M", "tt": "tat_wikipedia_2021_100K",
+    "ug": "uig_wikipedia_2021_30K", "uk": "ukr_news_2023_1M",
+    "ur": "urd_news_2020_30K", "uz": "uzb_news_2020_30K",
+    "vec": "vec_wikipedia_2021_30K", "vi": "vie_news_2022_1M",
+    "vo": "vol_wikipedia_2021_100K", "wa": "wln_wikipedia_2021_30K",
+    "wuu": "wuu_wikipedia_2021_30K",
+    "zh": "zho_news_2020_300K",
+}
