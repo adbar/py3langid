@@ -12,7 +12,7 @@ import string
 import sys
 from pathlib import Path
 
-DOCS_PER_DOMAIN = 150
+DOCS_PER_DOMAIN = 300
 DOMAIN_SEEDS = {"wiki": 1, "cc100": 2}
 
 def _doc(rng):

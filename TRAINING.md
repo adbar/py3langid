@@ -80,11 +80,15 @@ binary, so encoding only needs to be consistent).
 ## Training run
 
 ```
-python -m py3langid.train.train -m model_dir --prior_cap 1200 corpus
+python -m py3langid.train.train -m model_dir corpus
 ```
 
-Defaults reproduce the release config (order 2-5, doc_cap 3000, df_tokens
-30000, feats_per_lang 700); every knob is overridable for sweeps. Tokenization
+Bare defaults reproduce the release config (order 2-5, doc_cap 3000,
+df_tokens 60000, feats_per_lang 900); every knob is overridable for sweeps.
+Class priors are `log(per-class doc counts)`: the old `--prior_cap 1200` was
+measured to be a no-op (counts run 135..1318, clipping four classes by
+≤0.09 nats) and is gone, while dropping the priors altogether costs
+CommonLID −519 labels (p=2e-61), so they stay as-is. Tokenization
 happens once into per-(domain,lang) n-gram count shards cached at
 `CORPUS_DIR.shards` (`--shards` overrides). Shards store orders 1..max_order
 requested; a higher-order cache serves all lower orders, and `--doc_cap` is
@@ -92,30 +96,64 @@ part of both the shard filename and the cache key. All later stages are
 dict/numpy algebra over shards. Deterministic: same corpus + settings →
 byte-identical model. Warm run ~60s at the release config.
 
-## Group features + gated blend (adopted 2026-08-28)
+## Cluster features (unified 2026-08-29)
 
-`train.py` adds two stages on top of the base LD selection (skip with
-`--no_blend`):
+`CLUSTERS`/`CLUSTER_K` in `common.py`: each confusable cluster gets the top
+`CLUSTER_K`=150 features by cluster-restricted IG that the per-language
+quota missed, junk-filtered (digit/punct-only candidates skipped). Clusters:
+{ms,id}, {bs,hr}, {no,nn,da}, {zh,yue,wuu}.
 
-- **Group features** (`PAIR_GROUPS`/`PAIR_K` in `common.py`): per language
-  group ({ms,id}, {bs,hr}, {no,nn,da}), the top-150 new features by
-  group-restricted IG, junk-filtered (digit/punct-only candidates skipped).
-  K=150 measured optimal: K=300+ reintroduces bs/hr seesaw, K=75 undershoots.
-  Arabic groups measured harmful (register mismatch) — handled by the blend
-  cluster instead.
-- **Gated blend**: a corpus pass counts per-(DFA state, lang) visits; the
-  model ships `blend_ptc` (f16) = log-mixture of the state-level NB
-  (α=10) and the folded feature model (λ=0.5), plus per-class dialect
-  cluster ids (`BLEND_CLUSTERS`). At runtime (`langid.py`), when the main
-  model's top1−top2 margin per byte < `BLEND_TAU`=0.075 (~4-12% of docs),
-  the blend re-decides; a winner inside a dialect cluster is re-decided
-  within the cluster by the main model. Verified (exact fold, McNemar,
-  FLORES-dev held out): WiLI +0.09 / OpenLID +0.15 / FLORES +0.05 /
-  CommonLID +0.52 / FLORES-dev +0.06 vs the same model without either
-  stage. Costs: model 4.5→7.5 MB, classify ~44→50 µs/call, a curated
-  cluster list (a new confusable class added OUTSIDE its cluster gets
-  absorbed by the blend — extend `BLEND_CLUSTERS` when adding dialects).
-  Blend is disabled under `set_languages()` restriction.
+This is one mechanism where there used to be two. Group features and CJK
+codepoint bigrams differed only in candidate pool, so the pool is now shared
+(byte n-grams plus the order-6 CJK bigrams) and each cluster picks whatever
+discriminates its own languages — the CJK cluster takes ~86 of its 150 slots
+as bigrams and spends the rest on byte n-grams. Accuracy vs the two
+special-cased subsystems is a wash: FLORES +31 (p=1.9e-03), WiLI −12
+(p=0.043), OpenLID ±0, CommonLID −16 (n.s.).
+
+Measured, do not redo:
+- **K=150 is the optimum**, still. K=75 loses on both free benches
+  (−42/−43). K=300 wins them (OpenLID +57, p=0.011, hr +73) but **fails the
+  CommonLID gate** (−128, p=1.1e-03) via an ms/id trade (ms −50, id +49).
+  Note the pre-longest-match ledger rejected K=300 for the bs/hr seesaw;
+  the seesaw now nets positive, so the constant survives for a new reason.
+- **Cluster members must be mutually confusable within one script.**
+  Widening {bs,hr} to {bs,hr,sr,mk} costs WiLI −105 / OpenLID −82 (hr
+  −48/−69): with Cyrillic members in the cluster, script-level features
+  satisfy the restricted IG trivially and the budget stops buying the
+  bs/hr lexical cues.
+- **Arabic {ar,arz,ary} rejected again** (WiLI −28, OpenLID −24, ary −27).
+  The old note blamed the gated blend covering it; the blend is gone and
+  Arabic still fails, so the cause is register, not redundancy.
+- **{xh,zu} rejected** (no gain: WiLI −19, OpenLID −6 n.s.), and every
+  retired blend cluster at once is far worse (−115/−119).
+
+## Longest-match emission (adopted 2026-08-28, replaced the gated blend)
+
+The Aho-Corasick scanner emits, at each byte position, only the **longest**
+matching feature instead of all of them (`out_feat` in the model: one
+feature index per DFA state, -1 = none). Every feature stays in the model —
+each is the longest match at its own trie node — but a position no longer
+votes ~2.3 times with strictly nested n-grams, which Naive Bayes was
+multiplying as if independent.
+
+`train.py` therefore estimates the NB numerators from a **scanner corpus
+pass** (`state_visit_counts` then `feature_counts`) rather than from shard
+n-gram totals, so training counts exactly what the runtime counts.
+
+This subsumed the gated blend, which is gone (`blend_ptc`, `BLEND_CLUSTERS`,
+`build_blend`, `--no_blend`). Measured against the previous
+all-matches-plus-blend model, paired McNemar, all four benchmarks positive:
+WiLI 95.4367 to 95.5542 (+141, p=6e-09), OpenLID 94.3283 to 94.4596 (+315,
+p=5e-10), FLORES 96.2434 to 96.3203 (+187, p=3e-07), CommonLID micro
+91.7426 to 92.1755 (+1610, p=2e-85) and macro 89.969 to 90.208. Model
+10.27 to 5.08 MB, classify 90.9 to 47.6 µs, RSS +237 to +136 MB. Training
+cost is unchanged: the scanner pass replaces the blend's state-visit pass.
+
+Note: with no blend, featureless input (no selected n-gram anywhere, e.g.
+a 2-byte string) returns a flat score of 0.0 — a uniform distribution
+under `norm_probs`, so `min_confidence` abstains. The runtime still reads
+models that ship blend arrays or the older multi-match CSR output.
 
 ## Evaluation
 

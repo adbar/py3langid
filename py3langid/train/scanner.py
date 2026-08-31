@@ -2,8 +2,14 @@
 scanner.py -
 Assemble a "feature scanner" using Aho-Corasick string matching.
 This takes a list of features (byte sequences) and builds a DFA
-that when run on a byte stream can identify how often each of
-the features is present in a single pass over the stream.
+that when run on a byte stream can identify, at each position, the
+LONGEST feature ending there.
+
+Counting every match (each feature is a suffix of the longest one) makes
+Naive Bayes multiply up to five near-identical votes per byte position;
+counting only the longest is both more accurate and cheaper. The trie
+gives the longest match for free: a state's own feature if it ends there,
+otherwise its fail state's, which is the longest proper suffix match.
 """
 
 import array
@@ -13,7 +19,7 @@ from collections import defaultdict, deque
 def build_scanner(features):
     """Compile a feature list into a DFA transition array (nm_arr, one row
     of 256 next-states per state, next = nm_arr[(state << 8) + byte]) plus
-    a state -> matched-feature-indexes output mapping.
+    a state -> longest matched feature index (-1 = no match).
 
     @param features a list of features (byte sequences)
     @returns (nm_arr, tk_output)
@@ -22,8 +28,8 @@ def build_scanner(features):
 
     # trie (Aho-Corasick Algorithm 2), one children dict per state
     children = defaultdict(dict)
-    output = defaultdict(set)
     newstate = 0
+    ends = {}
     for a in features:
         state = 0
         j = 0
@@ -34,15 +40,18 @@ def build_scanner(features):
             newstate += 1
             children[state][a[p]] = newstate
             state = newstate
-        output[state].add(feat_index[a])
+        ends[state] = feat_index[a]
 
     # fail links + DFA fill in one BFS pass: each row starts as a copy of
     # its fail state's row (always shallower, so already complete),
-    # then real edges overwrite. 'H' limits us to 64k states.
+    # then real edges overwrite.
     nstates = newstate + 1
     typecode = 'H' if nstates <= 1 << 16 else 'L'
     nm_arr = array.array(typecode, [0]) * (nstates * 256)
     fail = array.array('L', [0]) * nstates
+    tk_output = array.array('l', [-1]) * nstates
+    for state, feat in ends.items():
+        tk_output[state] = feat
     queue = deque()
     for a, s in children[0].items():
         nm_arr[a] = s
@@ -55,10 +64,8 @@ def build_scanner(features):
         for a, s in children[r].items():
             fail[s] = nm_arr[base + a]  # = nextmove(fail[r], a), pre-overwrite
             nm_arr[base + a] = s
-            if output[fail[s]]:
-                output[s].update(output[fail[s]])
+            if tk_output[s] < 0:
+                # no feature ends at s: inherit the longest suffix match
+                tk_output[s] = tk_output[fail[s]]
             queue.append(s)
-
-    # sorted tuples iterate faster than sets; drop states that match nothing
-    tk_output = {k: tuple(sorted(v)) for k, v in output.items() if v}
     return nm_arr, tk_output

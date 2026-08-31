@@ -12,33 +12,31 @@ import numpy as np
 
 from ..modelio import save_model
 from .common import (
-    CJK_CLUSTER,
     CJK_DF_FLOOR,
-    CJK_K,
+    CLUSTER_K,
+    CLUSTERS,
+    DF_TOKENS,
     DOC_CAP,
     FEATURES_PER_LANG,
     LABEL_ALIAS,
     MAX_NGRAM_ORDER,
     MIN_NGRAM_ORDER,
-    NEEDY_DF_TOKENS,
-    PAIR_GROUPS,
-    PAIR_K,
     TOKENIZE_ORDER,
-    TOP_DOC_FREQ,
 )
 from .scanner import build_scanner
 from .shards import build_shards, count_matrices, domain_presence, merge_docfreq
 from .stages import (
-    build_blend,
+    cluster_features,
     compute_IG,
     compute_IG_binarized,
-    group_features,
+    feature_counts,
     index_corpus,
     is_cjk_bigram,
     learn_pc,
     ngram_select,
     prod_to_ptc,
-    select_quota_features,
+    select_LD_features,
+    state_visit_counts,
 )
 
 
@@ -59,13 +57,9 @@ def main(argv=None):
     parser.add_argument("--min_order", type=int, help="lowest n-gram order to use", default=MIN_NGRAM_ORDER)
     parser.add_argument("--doc_cap", type=int, default=DOC_CAP,
         help="truncate each doc to N bytes at tokenization (0 = no cap)")
-    parser.add_argument("--df_tokens", type=int, help="number of tokens to consider for each n-gram order", default=TOP_DOC_FREQ)
+    parser.add_argument("--df_tokens", type=int, help="candidate pool: top tokens by document frequency per order", default=DF_TOKENS)
     parser.add_argument("--feats_per_lang", type=int, metavar='N', help="select top N features for each language", default=FEATURES_PER_LANG)
     parser.add_argument("--shards", metavar="SHARD_DIR", help="n-gram count shard cache (default: CORPUS_DIR.shards)")
-    parser.add_argument("--prior_cap", type=int, default=0,
-        help="clip per-class doc counts to N for the class priors only (0 = off)")
-    parser.add_argument("--no_blend", action="store_true",
-        help="skip group features and the gated-blend table")
     parser.add_argument("corpus", help="read corpus from CORPUS_DIR", metavar="CORPUS_DIR")
 
     args = parser.parse_args(argv)
@@ -105,8 +99,7 @@ def main(argv=None):
     doc_count = merge_docfreq(shard_items, args.jobs)
     print(f"tallied document frequency of {len(doc_count)} terms")
 
-    DFfeats = ngram_select(doc_count, args.max_order, NEEDY_DF_TOKENS, args.min_order)
-    base_set = set(ngram_select(doc_count, args.max_order, args.df_tokens, args.min_order))
+    DFfeats = ngram_select(doc_count, args.max_order, args.df_tokens, args.min_order)
     df_set = set(DFfeats)
     cjk_cand = sorted(t for t, c in doc_count.items()
                       if c >= CJK_DF_FLOOR and t not in df_set and is_cjk_bigram(t))
@@ -116,7 +109,10 @@ def main(argv=None):
     print(f"selected {n_df} DF features + {len(cjk_cand)} CJK candidates")
 
     # Compute IG (and the NB numerators, in the same shard pass)
-    cm_lang, cm_domain, prod_df = count_matrices(shard_items, features, lang_index, domain_index, args.jobs)
+    # prod (shard n-gram totals) is not retained: the NB numerators are
+    # counted below under the scanner's longest-match emission instead
+    cm_lang, cm_domain, _ = count_matrices(shard_items, features, lang_index,
+                                           domain_index, args.jobs)
 
     # Select features by LD weight (per-language IG minus domain IG),
     # candidates restricted to terms seen in >=2 of the language's domains
@@ -126,50 +122,43 @@ def main(argv=None):
     domcount, lang_domains = domain_presence(shard_items, DFfeats, lang_index)
     need = np.array([min(2, lang_domains[lang]) for lang in langs])
     present = domcount >= need[None, :]
-    base_mask = np.fromiter((f in base_set for f in DFfeats), dtype=bool, count=n_df)
-    LDidx = select_quota_features(ld, present, base_mask, langs, args.feats_per_lang)
-    if not args.no_blend:
-        # group features are selected in base-pool row space
-        idx_base = np.flatnonzero(base_mask)
-        back = {int(g): k for k, g in enumerate(idx_base)}
-        base_feats = [DFfeats[i] for i in idx_base]
-        pair_idx = group_features(cm_lang[idx_base], lang_dist, lang_index, base_feats,
-                                  {back[i] for i in LDidx if base_mask[i]},
-                                  PAIR_GROUPS, PAIR_K)
-        print(f"added {len(pair_idx)} group features")
-        LDidx |= {int(idx_base[i]) for i in pair_idx}
-        if cjk_cand and all(la in lang_index for la in CJK_CLUSTER):
-            cols = [lang_index[la] for la in CJK_CLUSTER]
-            cjk_ig = compute_IG(cm_lang[n_df:][:, cols], lang_dist[cols])
-            LDidx |= {n_df + int(t) for t in np.argsort(cjk_ig)[::-1][:CJK_K]}
-            print(f"added {min(CJK_K, len(cjk_cand))} CJK bigram features")
+    LDidx = select_LD_features(ld, args.feats_per_lang, present)
+    extra = cluster_features(cm_lang, lang_dist, lang_index, features, LDidx,
+                             CLUSTERS, CLUSTER_K)
+    n_cjk = sum(i >= n_df for i in extra)
+    print(f"added {len(extra)} cluster features ({n_cjk} CJK bigrams)")
+    LDidx |= extra
     # one order for both LDfeats and nb_ptc's rows
     LDorder = sorted(LDidx, key=features.__getitem__)
     LDfeats = [features[i] for i in LDorder]
     print(f'selected {len(LDfeats)} features')
 
-    # Compile a scanner for the LDfeats
+    # Compile a scanner for the LDfeats (one longest match per position)
     tk_nextmove, tk_output = build_scanner(LDfeats)
+    emitting = sum(f >= 0 for f in tk_output)
+    print(f"scanner: {len(tk_output)} states, {emitting} emitting")
 
     # Assemble the NB model (duplicate labels are fine:
     # classification returns nb_classes[argmax])
     nb_classes = [LABEL_ALIAS.get(lang, lang) for lang in langs]
-    # priors only; feature estimates still use every doc
-    pc_dist = lang_dist.clip(max=args.prior_cap) if args.prior_cap else lang_dist
-    nb_pc = learn_pc(pc_dist)
-    # NB numerators (counted with the IG matrices), rows in LDfeats order
-    nb_ptc = prod_to_ptc(prod_df[LDorder])
+    # log P(class) from the per-class doc counts. The old --prior_cap 1200
+    # was measured to be a no-op (counts run 135..1318, so it clipped four
+    # classes by <=0.09 nats) and is gone: bare defaults now reproduce the
+    # release. The priors themselves DO earn their place -- dropping them
+    # costs CommonLID -519 labels (p=2e-61).
+    nb_pc = learn_pc(lang_dist)
 
-    blend = None
-    if not args.no_blend:
-        print("counting state visits for the blend table")
-        blend = build_blend(items, lang_index, nb_classes, nb_ptc,
-                            tk_nextmove, tk_output, args.doc_cap)
+    # NB numerators: count what the runtime accumulates, i.e. one longest
+    # match per byte position, rather than every n-gram occurrence
+    print("counting longest-match feature occurrences")
+    state_counts = state_visit_counts(items, tk_nextmove, len(tk_output),
+                                      lang_index, args.doc_cap)
+    nb_ptc = prod_to_ptc(feature_counts(state_counts, tk_output, len(LDfeats)))
 
     # output the model (npz+LZMA, the format the runtime ships and loads)
     model = nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output
     npz_path = os.path.join(model_dir, 'model.npz.xz')
-    save_model(npz_path, model, blend)
+    save_model(npz_path, model)
     print(f"wrote model to {npz_path} ({os.path.getsize(npz_path)} bytes)")
 
 

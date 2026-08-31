@@ -37,7 +37,7 @@ ISO3 = {
     # batch 5 (fro/ars/aeb rejected -- verdicts in sweep25 ledger)
     "uzs": "uzs",
     "fuv": "fuv", "gcr": "gcr", "gom": "gom", "grc": "grc",
-    "gug": "gug", "hbo": "hbo", "kik": "kik",
+    "gug": "gug", "guw": "guw", "hbo": "hbo", "kik": "kik",
 }
 CC100_CODE = {"zh": "zh-Hans"}
 # cc100 has no data for: tt, ba, vec, tk, sn, st, nso, kab, crh

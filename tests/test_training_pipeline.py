@@ -32,7 +32,7 @@ def test_training_pipeline(corpus_dir, tmp_path):
     import bz2
     import pickle
 
-    from py3langid.modelio import load_model
+    from py3langid.modelio import expand_nextmove, load_model
     from py3langid.train.train import main
 
     model_dir = tmp_path / "model"
@@ -61,8 +61,9 @@ def test_training_pipeline(corpus_dir, tmp_path):
     lang, _ = lid.classify("This is a test")
     assert isinstance(lang, str)
 
-    # Legacy loader compat: same model re-encoded as bz2+base64 (no blend)
-    model = load_model(model_path)[:5]
+    # Legacy loader compat: same model re-encoded as bz2+base64
+    ptc, pc, classes, rows, row_index, output = load_model(model_path)[:6]
+    model = (ptc, pc, classes, expand_nextmove(rows, row_index), output)
     legacy_path = tmp_path / "model_legacy"
     legacy_path.write_bytes(base64.b64encode(bz2.compress(pickle.dumps(model))))
     lid_legacy = LanguageIdentifier.from_modelpath(str(legacy_path))

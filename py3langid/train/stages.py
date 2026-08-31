@@ -9,18 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from .common import (
-    BLEND_ALPHA,
-    BLEND_CLUSTERS,
-    BLEND_LAMBDA,
-    LABEL_ALIAS,
-    NEEDY_LANGS,
-    QUOTA_NEEDY,
-    QUOTA_TRIMMED,
-    TRIM_LANGS,
-    read_doc,
-    walk_corpus,
-)
+from .common import read_doc, walk_corpus
 
 
 def index_corpus(root):
@@ -154,22 +143,6 @@ def is_cjk_bigram(term):
     return len(s) == 2 and all(ord(ch) >= 0x2E80 for ch in s)
 
 
-def select_quota_features(ld, present, base_mask, langs, default_quota):
-    """Per-language quotas: NEEDY_LANGS draw QUOTA_NEEDY from the full
-    pool, TRIM_LANGS QUOTA_TRIMMED and the rest default_quota from the
-    base_mask rows. @returns the union set of term row indices"""
-    selected = set()
-    for j, lang in enumerate(langs):
-        alias = LABEL_ALIAS.get(lang, lang)
-        if alias in NEEDY_LANGS:
-            quota, cand = QUOTA_NEEDY, np.flatnonzero(present[:, j])
-        else:
-            quota = QUOTA_TRIMMED if alias in TRIM_LANGS else default_quota
-            cand = np.flatnonzero(present[:, j] & base_mask)
-        order = cand[np.argsort(ld[cand, j])][::-1]
-        selected.update(order[:quota].tolist())
-    return selected
-
 
 def learn_pc(class_counts):
     """
@@ -192,21 +165,27 @@ _JUNK_BYTES = frozenset(
     b"!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 
 
-def group_features(cm_lang, lang_dist, lang_index, DFfeats, base, groups, k):
-    """Top-k new features per language group by group-restricted IG;
-    digit/punctuation-only candidates and groups with absent languages
-    are skipped. @returns set of DFfeats row indices to add"""
+def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
+    """Top-k *new* features per confusable cluster by cluster-restricted IG.
+
+    One mechanism for what used to be two: the candidate set is the whole
+    feature pool, byte n-grams and the order-6 CJK codepoint bigrams alike,
+    so a cluster picks whichever discriminates its own languages. Features
+    already selected are skipped (a cluster spends its budget on evidence
+    the per-language quota missed), as are digit/punctuation-only
+    candidates and clusters with a language absent from the corpus.
+    @returns set of row indices to add"""
     added = set()
     selected = set(base)
-    for group in groups:
-        if any(lang not in lang_index for lang in group):
+    for cluster in clusters:
+        if any(lang not in lang_index for lang in cluster):
             continue
-        cols = [lang_index[lang] for lang in group]
+        cols = [lang_index[lang] for lang in cluster]
         ig = compute_IG(cm_lang[:, cols], lang_dist[cols])
         taken = 0
         for t in np.argsort(ig)[::-1]:
             t = int(t)
-            if t in selected or all(b in _JUNK_BYTES for b in DFfeats[t]):
+            if t in selected or all(b in _JUNK_BYTES for b in feats[t]):
                 continue
             added.add(t)
             selected.add(t)
@@ -246,32 +225,16 @@ def state_visit_counts(items, tk_nextmove, num_states, lang_index,
     return counts.reshape(num_states + 1, num_langs)[:num_states]
 
 
-def blend_table(nb_ptc, tk_output, state_counts, alpha, lam):
-    """Blend table S = log(lam*P(state|c) + (1-lam)*P_fold(state|c)),
-    P_fold = per-state sum of log P(f|c) over output features.
-    @returns (num_states, num_class) float32"""
-    num_states = state_counts.shape[0]
-    fold = np.zeros((num_states, nb_ptc.shape[1]))
-    for state, feats in tk_output.items():
-        if state < num_states:
-            fold[state] = nb_ptc[list(feats)].sum(axis=0)
-    C = state_counts.astype(np.float64)
-    state_nb = np.log(C + alpha) - np.log(C.sum(axis=0) + alpha * num_states)
-    return np.logaddexp(state_nb + np.log(lam),
-                        fold + np.log1p(-lam)).astype(np.float32)
+def feature_counts(state_counts, tk_output, n_feats):
+    """Per-(feature, lang) occurrence counts under longest-match emission:
+    each visit to a state credits the one feature that state emits.
 
-
-def build_blend(items, lang_index, nb_classes, nb_ptc, tk_nextmove, tk_output,
-                doc_cap):
-    """Gated-blend arrays: state-level blend table + per-class cluster ids.
-    @returns (blend_ptc float32, cluster_id int16) for modelio.save_model"""
-    num_states = max(tk_output) + 1 if tk_output else 0
-    counts = state_visit_counts(items, tk_nextmove, num_states, lang_index,
-                                doc_cap)
-    blend_ptc = blend_table(nb_ptc, tk_output, counts, BLEND_ALPHA, BLEND_LAMBDA)
-    cluster_id = np.full(len(nb_classes), -1, dtype=np.int16)
-    for gi, group in enumerate(BLEND_CLUSTERS):
-        for i, c in enumerate(nb_classes):
-            if c in group:
-                cluster_id[i] = gi
-    return blend_ptc, cluster_id
+    These are the NB numerators the runtime actually accumulates, unlike
+    shard n-gram totals, which count every match at every position.
+    @returns (n_feats, num_langs) int64
+    """
+    out = np.asarray(tk_output)[:state_counts.shape[0]]
+    prod = np.zeros((n_feats, state_counts.shape[1]), dtype=np.int64)
+    emitting = np.flatnonzero(out >= 0)
+    np.add.at(prod, out[emitting], state_counts[emitting])
+    return prod

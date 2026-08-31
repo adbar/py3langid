@@ -43,23 +43,14 @@ def test_calibration_sqrt(norm_identifier):
     assert lo < 0.9
 
 
-def test_gated_blend(identifier):
-    """bundled model ships blend arrays; the blend pick yields a valid class"""
-    assert identifier._blend is not None and identifier._blend_active
-    blend_ptc, cluster_id = identifier._blend
-    assert blend_ptc.shape[1] == len(identifier.nb_classes)
-    assert set(cluster_id.tolist()) >= {-1, 0}
-    text = identifier._encode('ovo je tekst za probu')
-    pick = identifier._blend_pick(text, identifier._raw_score(text))
-    assert 0 <= pick < len(identifier.nb_classes)
-
-
-def test_blend_featureless(identifier, norm_identifier):
-    """featureless input gets the same state-based blend pick in both modes"""
+def test_featureless_input(identifier, norm_identifier):
+    """no features -> a flat floor and zero confidence, in both modes"""
     raw = identifier.classify('hi')
-    assert raw[0] == norm_identifier.classify('hi')[0]
-    assert raw[0] != identifier.nb_classes[0]  # not the argmax-of-a-flat-score artifact
-    assert raw[1] == 0.0  # flat floor, finite: stays JSON-serializable
+    assert raw[1] == 0.0  # finite: stays JSON-serializable
+    # the flat score makes every class column equally likely under norm_probs
+    label, prob = norm_identifier.classify('hi')
+    assert prob == pytest.approx(1 / len(identifier.nb_classes), rel=1e-6)
+    assert label == raw[0]
 
 
 def test_unique_labels(identifier):
@@ -77,7 +68,7 @@ def test_unique_labels(identifier):
 
 
 def test_rank_agrees_with_classify(identifier):
-    """rank()[0] is classify(), blend override included"""
+    """rank()[0] is classify()"""
     texts = ['ne znam sto to znaci', 'ovo je test', 'dobar dan', 'kaj',
              'Test Unicode sur du texte en français', 'hi', 'a']
     for text in texts:
@@ -85,13 +76,13 @@ def test_rank_agrees_with_classify(identifier):
         assert identifier.rank(text)[0] == (lang, pytest.approx(conf)), text
 
 
-def test_blend_disabled_on_restriction(identifier):
-    """language restriction turns the blend off; a reset re-enables it"""
+def test_language_restriction(identifier):
+    """a language restriction narrows the class set and still classifies"""
     identifier.set_languages(['en', 'de'])
-    assert not identifier._blend_active
+    assert set(identifier.labels) == {'en', 'de'}
     assert identifier.classify('This should be enough text.')[0] == 'en'
     identifier.set_languages(None)
-    assert identifier._blend_active
+    assert len(identifier.labels) > 2
 
 
 def test_unnormalized(identifier):
@@ -124,12 +115,14 @@ def test_bytes_str_parity():
 def test_empty_and_short():
     '''Feature-less input scores a finite floor, short input does not crash'''
     import json
-    for empty in ('', b'', '12345'):
+    for empty in ('', b''):
         lang, score = langid.classify(empty)
         assert isinstance(lang, str)
         assert score == 0.0
         # finite, so the server's JSON stays valid for strict parsers
         json.dumps({'confidence': score}, allow_nan=False)
+    # digit-only input has features since the fpl700 budget: routed to zxx
+    assert langid.classify('12345')[0] == 'zxx'
     lang, score = langid.classify('a')
     assert isinstance(lang, str)
 
@@ -197,9 +190,10 @@ def test_cli_external_model(tmp_path):
     from base64 import b64encode
 
     from py3langid.langid import MODEL_DIR
-    from py3langid.modelio import load_model
-    ptc, pc, classes, nextmove, output, _blend = load_model(MODEL_DIR / MODEL_FILE)
-    raw = pickle.dumps((ptc, pc, classes, nextmove, output))
+    from py3langid.modelio import expand_nextmove, load_model
+    ptc, pc, classes, nextmove, row, output = load_model(MODEL_DIR / MODEL_FILE)
+    # the pickle formats predate row dedup: expand to one row per state
+    raw = pickle.dumps((ptc, pc, classes, expand_nextmove(nextmove, row), output))
     model_path = tmp_path / 'external.model'
     model_path.write_bytes(b64encode(bz2.compress(raw, compresslevel=1)))
     result = subprocess.check_output(['langid', '-n', '-m', str(model_path)],
@@ -237,11 +231,12 @@ def test_from_modelpath(tmp_path, identifier):
     assert ident.classify('This should be enough text.')[0] == 'en'
 
     # legacy pickle inside LZMA (flat ptc layout)
-    from py3langid.modelio import load_model
-    ptc, pc, classes, nextmove, output, _blend = load_model(MODEL_DIR / MODEL_FILE)
+    from py3langid.modelio import expand_nextmove, load_model
+    ptc, pc, classes, nextmove, row, output = load_model(MODEL_DIR / MODEL_FILE)
+    flat = expand_nextmove(nextmove, row)
     plzma_path = tmp_path / 'model.plzma'
     with lzma.open(plzma_path, 'wb') as f:
-        pickle.dump((ptc.ravel(), pc, classes, nextmove, output), f)
+        pickle.dump((ptc.ravel(), pc, classes, flat, output), f)
     ident2 = LanguageIdentifier.from_modelpath(plzma_path)
     assert ident2.classify('This should be enough text.')[0] == 'en'
 
@@ -253,14 +248,16 @@ def test_score_log1p(identifier):
     text = b'This should be enough text.'
     state, idxs = 0, []
     for letter in text:
-        state = identifier.tk_nextmove[(state << 8) + letter]
-        v = identifier.tk_output[state]
-        if v:
-            idxs.extend(v)
+        state = identifier.tk_nextmove[(identifier.tk_row[state] << 8) + letter]
+        feat = identifier.tk_output[state]  # one longest match per position
+        if feat >= 0:
+            idxs.append(feat)
     from collections import Counter
     fc = Counter(idxs)
     idx = np.fromiter(fc.keys(), dtype=np.intp, count=len(fc))
     counts = np.fromiter(fc.values(), dtype=np.float32, count=len(fc))
-    expected = np.log1p(counts) @ identifier.nb_ptc[idx] + identifier.nb_pc
-    # norm_probs is off, so _decide's scores are the raw NB scores
-    assert np.allclose(identifier._decide(text)[0], expected, rtol=1e-4)
+    expected = np.log1p(counts) @ np.asarray(identifier.nb_ptc, dtype=np.float32)[idx] \
+        + identifier.nb_pc
+    # norm_probs is off, so _decide returns the raw NB scores, per label
+    assert np.allclose(identifier._decide(text), identifier._collapse(expected),
+                       rtol=1e-4)

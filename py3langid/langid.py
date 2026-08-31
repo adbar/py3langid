@@ -17,6 +17,7 @@ import lzma
 import pickle
 import unicodedata
 import zipfile
+from array import array
 from base64 import b64decode
 from collections import Counter
 from http import HTTPStatus
@@ -33,9 +34,6 @@ LOGGER = logging.getLogger(__name__)
 IDENTIFIER = None
 MODEL_FILE = 'data/model.npz.xz'
 MODEL_DIR = Path(__file__).parent
-# gated blend: consult the state-level blend table only when the
-# main model's top1-top2 score margin per byte falls below this
-BLEND_TAU = 0.075
 NFC_NORMALIZE = True  # normalize input to NFC before byte tokenization
 
 
@@ -94,22 +92,24 @@ def _process_file(path, dist=False):
 
 class LanguageIdentifier:
     __slots__ = [
-        '_blend',
-        '_blend_active',
         '_col_group',
         '_full_model',
         '_labels',
+        '_multi_match',
         '_norm_probs',
+        '_rowbase',
         'min_confidence',
         'nb_classes',
         'nb_pc',
         'nb_ptc',
         'tk_nextmove',
         'tk_output',
+        'tk_row',
     ]
 
     @classmethod
-    def _from_model_data(cls, nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output, *args, **kwargs):
+    def _from_model_data(cls, nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output,
+                         *args, tk_row=None, **kwargs):
         n_classes = len(nb_classes)
         nb_ptc = np.asarray(nb_ptc)
         if nb_ptc.ndim == 1:  # legacy pickled layout stores ptc flat
@@ -121,7 +121,7 @@ class LanguageIdentifier:
                 output_list[s] = v
             tk_output = output_list
         return cls(nb_ptc, np.asarray(nb_pc), nb_classes, tk_nextmove, tk_output,
-                   *args, **kwargs)
+                   *args, tk_row=tk_row, **kwargs)
 
     @classmethod
     def from_model_file(cls, model_file, *args, **kwargs):
@@ -129,8 +129,9 @@ class LanguageIdentifier:
         filepath = Path(model_file)
         if not filepath.is_absolute():
             filepath = MODEL_DIR / filepath
-        *data, blend = _load_model_file(filepath)
-        return cls._from_model_data(*data, *args, blend=blend, **kwargs)
+        ptc, pc, classes, nextmove, row, output = _load_model_file(filepath)
+        return cls._from_model_data(ptc, pc, classes, nextmove, output, *args,
+                                    tk_row=row, **kwargs)
 
     # legacy pickle-based formats
     @classmethod
@@ -158,7 +159,7 @@ class LanguageIdentifier:
             return cls.from_modelstring(f.read(), *args, **kwargs)
 
     def __init__(self, nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output,
-                 norm_probs=False, min_confidence=None, blend=None):
+                 norm_probs=False, min_confidence=None, tk_row=None):
         # abstention: classify() returns ("und", conf) below this confidence
         if min_confidence is not None and not norm_probs:
             raise ValueError("min_confidence requires norm_probs=True")
@@ -167,12 +168,19 @@ class LanguageIdentifier:
         self.nb_pc = nb_pc
         self.nb_classes = nb_classes
         self.tk_nextmove = tk_nextmove
+        # state -> row of the deduplicated transition table (identity for
+        # models that store one row per state)
+        self.tk_row = (tk_row if tk_row is not None
+                       else array('I', range(len(tk_nextmove) // 256)))
+        # the walk's row offsets, pre-shifted: one list lookup per byte
+        # instead of a lookup plus a shift (measured -6% per call for 3 MB)
+        self._rowbase = [r << 8 for r in self.tk_row]
         self.tk_output = tk_output
+        # models predating longest-match emission store a tuple per state
+        self._multi_match = next((not isinstance(v, int) for v in tk_output
+                                  if v is not None), False)
         self._norm_probs = norm_probs
         self._full_model = nb_ptc, nb_pc, nb_classes
-        # gated blend arrays: (blend_ptc, blend_cluster_id), or None
-        self._blend = blend
-        self._blend_active = blend is not None
         self._index_labels()
 
     @property
@@ -201,9 +209,6 @@ class LanguageIdentifier:
     def set_languages(self, langs=None):
         LOGGER.debug("restricting languages to: %s", langs)
         nb_ptc, nb_pc, nb_classes = self._full_model
-        # the blend table spans the full class set only
-        self._blend_active = self._blend is not None and langs is None
-
         if langs is None:
             self.nb_classes, self.nb_ptc, self.nb_pc = nb_classes, nb_ptc, nb_pc
         else:
@@ -241,27 +246,37 @@ class LanguageIdentifier:
         "NB score from a sparse {row: count} map over `table`'s rows."
         idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
         counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
-        # sublinear TF: models are trained for log1p'd counts
+        # sublinear TF: models are trained for log1p'd counts. `table` is
+        # float16 in shipped models; matmul promotes it to float32 exactly,
+        # so there is nothing to gain from upcasting the whole table.
         return np.log1p(counts) @ table[idx] + self.nb_pc
 
     def _raw_score(self, text):
         "Raw NB scores for encoded bytes."
         # DFA walk
         state, indexes = 0, []
-        extend = indexes.extend
-        nm, out = self.tk_nextmove, self.tk_output
+        nm, rowbase, out = self.tk_nextmove, self._rowbase, self.tk_output
 
-        for letter in text:
-            state = nm[(state << 8) + letter]
-            v = out[state]
-            if v:
-                extend(v)
+        if self._multi_match:  # pre-longest-match model: a tuple per state
+            extend = indexes.extend
+            for letter in text:
+                state = nm[rowbase[state] + letter]
+                v = out[state]
+                if v:
+                    extend(v)
+        else:
+            append = indexes.append
+            for letter in text:
+                state = nm[rowbase[state] + letter]
+                f = out[state]
+                if f >= 0:
+                    append(f)
 
         if indexes:
             return self._sparse_score(Counter(indexes), self.nb_ptc)
 
-        # no features: a flat floor, so the margin is zero and the blend
-        # decides from visited states (softmax makes it uniform)
+        # no features: a flat floor, i.e. zero confidence and (under
+        # norm_probs) a uniform distribution, so min_confidence abstains
         return np.zeros(len(self.nb_classes), dtype=np.float32)
 
     def _normalize(self, probs, nbytes):
@@ -273,65 +288,30 @@ class LanguageIdentifier:
             probs = e / e.sum()
         return probs
 
-    def _blend_pick(self, text, probs):
-        """Re-decide with the state-level blend table; the winner's dialect
-        cluster (if any) is re-decided within by the main model."""
-        blend_ptc, cluster_id = self._blend
-        num_states = blend_ptc.shape[0]
-        state, states = 0, []
-        append = states.append
-        nm = self.tk_nextmove
-        for letter in text:
-            state = nm[(state << 8) + letter]
-            if state < num_states:
-                append(state)
-        if not states:
-            return int(probs.argmax())
-        # bulk Counter beats per-byte updates
-        visits = Counter(states)
-        pred = int(self._sparse_score(visits, blend_ptc).argmax())
-        cluster = cluster_id[pred]
-        if cluster >= 0:
-            members = np.flatnonzero(cluster_id == cluster)
-            pred = int(members[probs[members].argmax()])
-        return pred
-
     def _decide(self, text):
-        "Shared by classify() and rank(): (normalized scores, winning column)."
+        "Shared by classify() and rank(): one normalized score per label."
         text = self._encode(text)
-        probs = self._raw_score(text)
-        cl = int(probs.argmax())
-        if self._blend_active and text:
-            top2 = np.partition(probs, -2)[-2:]
-            if (top2[1] - top2[0]) / len(text) < BLEND_TAU:
-                cl = self._blend_pick(text, probs)
-        return self._normalize(probs, len(text)), cl
+        probs = self._normalize(self._raw_score(text), len(text))
+        return self._collapse(probs)
 
     def classify(self, text):
-        probs, cl = self._decide(text)
-        conf = float(self._collapse(probs)[self._col_group[cl]])
+        scores = self._decide(text)
+        i = int(scores.argmax())
+        conf = float(scores[i])
         if self.min_confidence is not None and conf < self.min_confidence:
             return 'und', conf
-        return self.nb_classes[cl], conf
+        return self._labels[i], conf
 
     def rank(self, text):
         """Languages by likelihood, best first, one entry per label.
 
         Shares classify()'s decision, so rank()[0] == classify() unless
-        min_confidence abstains. A blend override is hoisted to the front,
-        so the head can outrank a higher score behind it.
+        min_confidence abstains.
         """
-        probs, cl = self._decide(text)
-        scores = self._collapse(probs)
-        ranked = sorted(
-            ((lang, float(p)) for lang, p in zip(self._labels, scores)),
+        return sorted(
+            ((lang, float(p)) for lang, p in zip(self._labels, self._decide(text))),
             key=itemgetter(1), reverse=True,
         )
-        winner = self.nb_classes[cl]
-        if ranked[0][0] != winner:  # blend overrode the raw argmax: hoist its pick
-            i = next(k for k, (lang, _) in enumerate(ranked) if lang == winner)
-            ranked.insert(0, ranked.pop(i))
-        return ranked
 
 
 def _detect(data):
@@ -475,7 +455,6 @@ def main():
                   initargs=(options.model, options.normalize, langs)) as pool:
             if options.dist:
                 header = IDENTIFIER.labels
-                # 'language': the blend winner may not be the row's argmax
                 writer.writerow(['path', 'language'] + header)
                 for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), generate_paths()):
                     scores = dict(ranking)

@@ -14,37 +14,19 @@ from typing import NamedTuple
 # overridable via command-line options
 MAX_NGRAM_ORDER = 5 # largest order of n-grams to consider
 MIN_NGRAM_ORDER = 2 # smallest order of n-grams to consider
-TOP_DOC_FREQ = 30000 # number of tokens to consider for each order
-FEATURES_PER_LANG = 700 # number of features to select for each language
+DF_TOKENS = 60000 # candidate pool: top tokens by document frequency, per order
+FEATURES_PER_LANG = 900 # number of features to select for each language
 DOC_CAP = 3000 # bytes per doc at tokenization; equalizes doc byte weight
 
-# group-discriminative extra features (top PAIR_K by group-restricted IG)
-PAIR_GROUPS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"))
-PAIR_K = 150
+# Confusable clusters get CLUSTER_K extra features each, chosen by
+# cluster-restricted IG from features the per-language quota missed.
+CLUSTERS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"),
+            ("zh", "yue", "wuu"))
+CLUSTER_K = 150
 
-# gated blend (see langid.py BLEND_TAU); a confusable class added
-# OUTSIDE its cluster gets absorbed by the blend - extend the list
-BLEND_ALPHA = 10.0
-BLEND_LAMBDA = 0.5
-BLEND_CLUSTERS = (
-    ("ar", "arz", "ary"), ("bs", "hr", "sr", "mk"), ("no", "nn", "da"),
-    ("zh", "yue", "wuu"), ("ms", "id"), ("xh", "zu"),
-)
-
-# Per-language feature quotas: TRIM_LANGS saturate early (measured);
-# the confusable NEEDY_LANGS draw extra depth from a doubled DF pool.
-QUOTA_TRIMMED = 650
-QUOTA_NEEDY = 900
-NEEDY_DF_TOKENS = 60000
-TRIM_LANGS = frozenset(
-    ["ace", "af", "am", "an", "az", "ba", "be", "bn", "br", "crh", "cs", "cy", "dz", "el", "en", "fy", "ga", "gd", "gu", "gug", "he", "hu", "hy", "ig", "is", "ja", "jv", "ka", "kik", "kk", "km", "kn", "ko", "ky", "lb", "lij", "lo", "lv", "mg", "ml", "mt", "my", "om", "or", "pa", "ps", "pt", "qu", "ru", "rw", "sa", "se", "si", "so", "sq", "st", "sv", "ta", "te", "th", "tk", "tl", "ug", "uk", "ur", "vi", "vo", "wa", "yo"])
-NEEDY_LANGS = frozenset(
-    ["ar", "ary", "arz", "bg", "bs", "da", "eo", "eu", "fa", "fo", "gl", "hr", "id", "mk", "mr", "ms", "nl", "nn", "no", "sk", "sl", "sr", "tt", "vec", "wuu", "xh", "yue", "zh", "zu"])
-
-# CJK codepoint bigrams: byte order 5 cannot span two 3-byte codepoints,
-# so 6-byte 2-char n-grams are selected separately (needs TOKENIZE_ORDER).
-CJK_CLUSTER = ("zh", "yue", "wuu")
-CJK_K = 150
+# Extra candidate pool: byte order 5 cannot span two 3-byte codepoints, so
+# CJK codepoint bigrams are 6-byte n-grams (hence TOKENIZE_ORDER) offered
+# to the clusters alongside the DF pool.
 CJK_DF_FLOOR = 20
 TOKENIZE_ORDER = 6
 
