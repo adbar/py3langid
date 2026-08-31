@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from py3langid.langid import application
+from py3langid.server import application
 
 
 def _request(path, method='GET', body=None, query=None, content_length='auto'):

@@ -10,16 +10,13 @@ Based on research by Marco Lui and Tim Baldwin.
 See LICENSE file for more info.
 """
 
-import json
 import logging
 import lzma
 import unicodedata
 import zipfile
 from collections import Counter
-from http import HTTPStatus
 from operator import itemgetter
 from pathlib import Path
-from urllib.parse import parse_qs
 
 import numpy as np
 
@@ -246,68 +243,6 @@ class LanguageIdentifier:
         return list(best.items())
 
 
-def _detect(data):
-    lang, conf = classify(data)
-    return {'language': lang, 'confidence': conf}
-
-
-_ROUTES = {'detect': _detect, 'rank': rank}
-
-
-def application(environ, start_response):
-    """WSGI-compatible langid web service."""
-    path = environ.get('PATH_INFO', '').strip('/').partition('/')[0]
-    handler = _ROUTES.get(path)
-    if handler is None:
-        return _return_response(start_response, 404, None, 'Not found')
-
-    method = environ['REQUEST_METHOD']
-    if method not in ('GET', 'POST', 'PUT'):
-        return _return_response(start_response, 405, None, f'{method} not allowed')
-
-    data = _get_data(environ)
-    if data is None:
-        return _return_response(start_response, 400, None, 'No data provided')
-
-    return _return_response(start_response, 200, handler(data), None)
-
-
-def _get_data(environ):
-    method = environ['REQUEST_METHOD']
-    if method in ('PUT', 'POST'):
-        try:
-            length = int(environ.get('CONTENT_LENGTH', 0))
-        except ValueError:
-            return None
-        if length <= 0:
-            return None
-        data = environ['wsgi.input'].read(length)
-        if method == 'POST':
-            try:
-                data = parse_qs(data)[b'q'][0]
-            except KeyError:
-                pass
-        return data
-    if method == 'GET':
-        try:
-            return parse_qs(environ.get('QUERY_STRING', ''))['q'][0]
-        except KeyError:
-            return None
-    return None
-
-
-def _return_response(start_response, status_code, response_data, response_details):
-    status = HTTPStatus(status_code)
-    response = {
-        'responseData': response_data,
-        'responseStatus': status_code,
-        'responseDetails': response_details,
-    }
-    headers = [('Content-type', 'application/json; charset=utf-8')]
-    start_response(f"{status.value} {status.phrase}", headers)
-    return [json.dumps(response).encode('utf-8')]
-
-
 def main():
 
     import argparse
@@ -353,6 +288,8 @@ def main():
     elif options.serve:
         import socket
         from wsgiref.simple_server import make_server
+
+        from .server import application
 
         if options.remote and options.host is None:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

@@ -128,12 +128,17 @@ class DocWriter:
         return sum(self.counts.values())
 
 
+def valid_doc(doc):
+    """Strip, truncate, drop stubs. EVERY source routes docs through this,
+    so no domain enters the corpus under a different rule.
+    @returns the doc bytes, or None if it is a stub"""
+    doc = doc.strip()[:MAX_DOC]
+    return doc if len(doc) >= MIN_DOC else None
+
+
 def valid_docs(docs):
-    """The one doc-validity gate: strip, truncate, drop stubs."""
-    for doc in docs:
-        doc = doc.strip()[:MAX_DOC]
-        if len(doc) >= MIN_DOC:
-            yield doc
+    """valid_doc over a stream, dropping stubs."""
+    return (d for d in map(valid_doc, docs) if d is not None)
 
 
 def write_docs(out_dir, docs, max_docs):
@@ -225,8 +230,10 @@ def gather_tatoeba(out_root, langs, max_docs, per_doc):
                     continue
                 buf[lang].append(parts[2])
                 if len(buf[lang]) == per_doc:
-                    doc = "\n".join(buf[lang]).encode("utf-8")
+                    doc = valid_doc("\n".join(buf[lang]).encode("utf-8"))
                     buf[lang] = []
+                    if doc is None:  # too few bytes for per_doc sentences
+                        continue
                     if lang not in writers:
                         writers[lang] = DocWriter(out_root / "tatoeba" / lang, max_docs)
                     writers[lang].write(doc)
@@ -290,7 +297,7 @@ def per_lang_domain(name, func, langs, jobs, out_root, max_docs):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, help="corpus output directory")
-    parser.add_argument("--langs", help="comma-separated ISO 639-1 codes (default: the 97 model languages)")
+    parser.add_argument("--langs", help="comma-separated language codes (default: the shipped model's labels)")
     parser.add_argument("--domains", default="tatoeba,cc100,wiki,leipzig", help="comma-separated subset of domains")
     parser.add_argument("--max-docs-per-lang", type=int, default=300)
     parser.add_argument("--sentences-per-doc", type=int, default=50)

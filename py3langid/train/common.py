@@ -10,9 +10,9 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
-# Pipeline defaults = the adopted release config (armE, 2026-08-27;
-# FEATURES_PER_LANG raised to 1050 on 2026-08-31), overridable via
-# command-line options
+# The adopted release config (armE, 2026-08-27; FEATURES_PER_LANG 1050 on
+# 2026-08-31). Orders and DF pool size are constants, not flags: settled by
+# sweeps, and the orders decide what tokenization writes to the cache.
 MAX_NGRAM_ORDER = 5 # largest order of n-grams to consider
 MIN_NGRAM_ORDER = 2 # smallest order of n-grams to consider
 DF_TOKENS = 60000 # candidate pool: top tokens by document frequency, per order
@@ -32,17 +32,20 @@ CLUSTERS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"),
             ("zh", "yue", "wuu"))
 CLUSTER_K = 150
 
-# Extra candidate pool: byte order 5 cannot span two 3-byte codepoints, so
-# CJK codepoint bigrams are 6-byte n-grams (hence TOKENIZE_ORDER) offered to
-# the clusters alongside the DF pool. They are the only use the pipeline has
-# for that order, so tokenization emits nothing else there.
-CJK_DF_FLOOR = 20
+# Byte order 5 cannot span two 3-byte codepoints, so CJK codepoint bigrams
+# are 6-byte n-grams (hence TOKENIZE_ORDER). They are the only use the
+# pipeline has for that order: doc_ngrams always emits them, and
+# ngram_select admits nothing else there.
 TOKENIZE_ORDER = 6
+
+# The orders a feature may have: byte orders plus the CJK bigram order.
+SELECT_ORDERS = frozenset(range(MIN_NGRAM_ORDER, MAX_NGRAM_ORDER + 1)) \
+    | {TOKENIZE_ORDER}
 
 
 def is_cjk_bigram(term):
     """True for a 6-byte n-gram encoding exactly two CJK codepoints."""
-    if len(term) != 6:
+    if len(term) != TOKENIZE_ORDER:
         return False
     try:
         s = term.decode("utf-8")
@@ -139,6 +142,33 @@ def read_doc(path, cap=0):
 def job_count(processes=None):
     """Resolve a jobs setting to a concrete worker count (None = all cores)."""
     return mp.cpu_count() if processes is None else max(1, processes)
+
+
+def chunks(seq, size):
+    """Split seq into contiguous chunks of at most `size` items."""
+    size = max(1, size)
+    return [seq[i:i + size] for i in range(0, len(seq), size)]
+
+
+def job_chunks(seq, jobs):
+    """One contiguous chunk per job: for reducers whose partial is a dense
+    matrix, where more chunks would mean more transfers."""
+    return chunks(seq, -(-len(seq) // job_count(jobs)))
+
+
+_SHARED = ()
+
+
+def set_shared(*args):
+    """MapPool initializer: stash per-worker constants too big to ship with
+    every chunk. Workers read them back with shared()."""
+    global _SHARED
+    _SHARED = args
+
+
+def shared():
+    """The initargs given alongside set_shared."""
+    return _SHARED
 
 
 @contextmanager

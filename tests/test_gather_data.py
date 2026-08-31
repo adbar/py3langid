@@ -29,6 +29,33 @@ def test_write_docs_all_stubs(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
+def test_tatoeba_uses_the_validity_gate(tmp_path, monkeypatch):
+    """tatoeba routes docs through valid_doc like every other source"""
+    import io
+    import tarfile
+
+    from py3langid.train import gather_data
+
+    # two "languages": eng packs 1 long sentence per doc, deu 1 stub per doc
+    rows = [("1", "eng", "L" * (MAX_DOC + 500))] * 3 + [("2", "deu", "tiny")] * 3
+    csv = "".join("\t".join(r) + "\n" for r in rows).encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:bz2") as tar:
+        info = tarfile.TarInfo("sentences.csv")
+        info.size = len(csv)
+        tar.addfile(info, io.BytesIO(csv))
+    monkeypatch.setattr(gather_data, "fetch_cached",
+                        lambda *a, **k: io.BytesIO(buf.getvalue()))
+    monkeypatch.setattr(gather_data, "ISO3", {"en": "eng", "de": "deu"})
+
+    counts = gather_data.gather_tatoeba(tmp_path, ["en", "de"], max_docs=2,
+                                        per_doc=1)
+    assert counts == {"en": 2}  # de produced only stubs -> nothing written
+    for f in (tmp_path / "tatoeba" / "en").iterdir():
+        assert f.stat().st_size == MAX_DOC  # truncated, not written raw
+    assert not (tmp_path / "tatoeba" / "de").exists()
+
+
 def test_code_mappings():
     # keys are ISO 639-1 (2-char) or 639-3 (3-char) for langs without a 639-1 code
     for mapping in (ISO3, CC100_CODE, WIKI_CODE):

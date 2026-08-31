@@ -35,9 +35,6 @@ def test_training_pipeline(corpus_dir, tmp_path):
 
     common_args = [
         "-j", "1",
-        "--max_order", "2",
-        "--min_order", "2",
-        "--df_tokens", "100",
         "--feats_per_lang", "20",
         str(corpus_dir),
     ]
@@ -85,8 +82,8 @@ def test_relabel(corpus_dir, tmp_path):
         (d / "doc1.txt").write_bytes(doc + b" jos")
 
     model_dir = tmp_path / "model"
-    main(["-m", str(model_dir), "-j", "1", "--max_order", "2", "--df_tokens", "100",
-          "--feats_per_lang", "20", str(corpus_dir)])
+    main(["-m", str(model_dir), "-j", "1", "--feats_per_lang", "20",
+          str(corpus_dir)])
     classes = load_model(model_dir / "model.npz.xz")[2]
 
     assert "srl" not in classes

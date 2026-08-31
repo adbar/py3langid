@@ -3,12 +3,17 @@ import math
 import os
 
 import numpy as np
+import pytest
 
-from py3langid.train.common import TOKENIZE_ORDER, is_cjk_bigram
+from py3langid.train.common import (
+    MAX_NGRAM_ORDER,
+    TOKENIZE_ORDER,
+    chunks,
+    is_cjk_bigram,
+    job_chunks,
+)
 from py3langid.train.shards import (
     COUNT_DTYPE,
-    _chunks,
-    _job_chunks,
     build_shards,
     count_matrices,
     doc_ngrams,
@@ -22,6 +27,15 @@ from py3langid.train.stages import (
     ngram_select,
     select_LD_features,
 )
+
+
+@pytest.fixture
+def tokenize_order2(monkeypatch):
+    """Tokenize byte order 2 only, so a shard payload is small enough to
+    assert on exactly. Moves the tokenizer and the cache key together, but
+    NOT selection: SELECT_ORDERS is derived at import, so tests needing a
+    different selection pass ngram_select's `orders`."""
+    monkeypatch.setattr("py3langid.train.shards.MAX_NGRAM_ORDER", 2)
 
 
 def test_entropy():
@@ -58,6 +72,16 @@ def test_doc_ngrams_matches_unrestricted_selection():
     full = doc_ngrams(data, TOKENIZE_ORDER)
     selectable = {t for t in full if len(t) < TOKENIZE_ORDER or is_cjk_bigram(t)}
     assert doc_ngrams(data, TOKENIZE_ORDER - 1) == selectable
+
+
+def test_ngram_select_restricts_tokenize_order_to_cjk():
+    """order TOKENIZE_ORDER admits CJK bigrams only, whatever the shards
+    hold there: at MAX_NGRAM_ORDER >= TOKENIZE_ORDER tokenization emits
+    plain 6-grams, which must not become features"""
+    cjk = "\u4e2d\u6587".encode()
+    doc_count = {cjk: 5, b"abcdef": 99, b"ab": 3}
+    selected = ngram_select(doc_count, 10, orders={2, TOKENIZE_ORDER})
+    assert selected == [b"ab", cjk]  # b"abcdef" dropped despite the top DF
 
 
 def test_compute_IG_nonbinarized():
@@ -101,17 +125,22 @@ def test_select_LD_features():
         [0.1, 0.6],
         [-0.1, -0.1],
     ])
-    assert select_LD_features(ld, 1) == {0, 1}
-    assert select_LD_features(ld, 3) == {0, 1, 2}
+    present = np.ones(ld.shape, dtype=bool)
+    assert select_LD_features(ld, 1, present) == {0, 1}
+    assert select_LD_features(ld, 3, present) == {0, 1, 2}
+    # a language's picks are restricted to features present in it
+    only_first = np.array([[True, True], [False, True], [False, True]])
+    assert select_LD_features(ld, 3, only_first) == {0, 1, 2}
+    assert select_LD_features(ld, 1, only_first) == {0, 1}
 
 
 def test_ngram_select():
     doc_count = {b"a": 5, b"b": 3, b"ab": 10, b"cd": 1}
-    feats = ngram_select(doc_count, max_order=2, tokens_per_order=1, min_order=1)
+    feats = ngram_select(doc_count, tokens_per_order=1, orders={1, 2})
     assert feats == [b"a", b"ab"]
 
 
-def test_build_shards_cache(tmp_path):
+def test_build_shards_cache(tmp_path, tokenize_order2):
     lang_dir = tmp_path / "corpus" / "web" / "en"
     lang_dir.mkdir(parents=True)
     doc0 = lang_dir / "doc0.txt"
@@ -120,7 +149,7 @@ def test_build_shards_cache(tmp_path):
     items = [("web", "en", str(lang_dir / f"doc{i}.txt")) for i in range(2)]
     shard_dir = str(tmp_path / "shards")
 
-    [(domain, lang, shard_path)] = build_shards(items, shard_dir, 2, jobs=1)
+    [(domain, lang, shard_path)] = build_shards(items, shard_dir, jobs=1)
     assert (domain, lang) == ("web", "en")
     # shards carry document frequency only -- the NB numerators come from
     # feature_counts, so total occurrence counts are never stored
@@ -129,16 +158,12 @@ def test_build_shards_cache(tmp_path):
 
     # unchanged corpus: shard is reused, not rewritten
     mtime = os.path.getmtime(shard_path)
-    build_shards(items, shard_dir, 2, jobs=1)
-    assert os.path.getmtime(shard_path) == mtime
-
-    # lower requested order is served by the cached higher-order shard
-    build_shards(items, shard_dir, 1, jobs=1)
+    build_shards(items, shard_dir, jobs=1)
     assert os.path.getmtime(shard_path) == mtime
 
     # changed doc invalidates and rebuilds the shard
     doc0.write_bytes(b"zzzz")
-    build_shards(items, shard_dir, 2, jobs=1)
+    build_shards(items, shard_dir, jobs=1)
     docfreq = load_shard(shard_path)
     assert docfreq[b"ab"] == 1  # only doc1 still has it
     assert docfreq[b"zz"] == 1
@@ -146,15 +171,15 @@ def test_build_shards_cache(tmp_path):
 
 def test_chunks_and_job_chunks():
     seq = list(range(10))
-    assert _chunks(seq, 4) == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]]
-    assert _chunks(seq, 0) == [[i] for i in seq]   # size floors at 1
-    assert _chunks([], 4) == []
-    assert len(_job_chunks(seq, 3)) == 3
-    assert [x for c in _job_chunks(seq, 3) for x in c] == seq
-    assert _job_chunks([], 3) == []
+    assert chunks(seq, 4) == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]]
+    assert chunks(seq, 0) == [[i] for i in seq]   # size floors at 1
+    assert chunks([], 4) == []
+    assert len(job_chunks(seq, 3)) == 3
+    assert [x for c in job_chunks(seq, 3) for x in c] == seq
+    assert job_chunks([], 3) == []
 
 
-def test_merge_docfreq_spans_chunks(tmp_path, monkeypatch):
+def test_merge_docfreq_spans_chunks(tmp_path, monkeypatch, tokenize_order2):
     """the merge reduces across several chunks, not just one"""
     monkeypatch.setattr("py3langid.train.shards.MERGE_SHARDS_PER_CHUNK", 2)
     items, shard_dir = [], str(tmp_path / "shards")
@@ -163,13 +188,13 @@ def test_merge_docfreq_spans_chunks(tmp_path, monkeypatch):
         d.mkdir(parents=True)
         (d / "doc0.txt").write_bytes(b"abab")
         items.append(("web", f"l{i}", str(d / "doc0.txt")))
-    shard_items = build_shards(items, shard_dir, 2, jobs=1)
-    assert len(_chunks(shard_items, 2)) == 3   # the path under test
+    shard_items = build_shards(items, shard_dir, jobs=1)
+    assert len(chunks(shard_items, 2)) == 3   # the path under test
     # every shard is b"abab": df 1 per shard, so 5 shards sum to 5
     assert merge_docfreq(shard_items, jobs=1) == {b"ab": 5, b"ba": 5}
 
 
-def test_count_matrices(tmp_path):
+def test_count_matrices(tmp_path, tokenize_order2):
     """per-lang/per-domain docfreq and domain presence, in one shard pass"""
     items, shard_dir = [], str(tmp_path / "shards")
     # en appears in two domains, fr in one
@@ -179,23 +204,23 @@ def test_count_matrices(tmp_path):
         d.mkdir(parents=True)
         (d / "doc0.txt").write_bytes(data)
         items.append((domain, lang, str(d / "doc0.txt")))
-    shard_items = build_shards(items, shard_dir, 2, jobs=1)
+    shard_items = build_shards(items, shard_dir, jobs=1)
 
     feats = [b"ab", b"cd"]
     lang_index, domain_index = {"en": 0, "fr": 1}, {"news": 0, "web": 1}
-    cm_lang, cm_domain, domcount, lang_domains = count_matrices(
+    cm_lang, cm_domain, domcount = count_matrices(
         shard_items, feats, lang_index, domain_index, jobs=1)
 
     assert cm_lang.dtype == COUNT_DTYPE and cm_domain.dtype == COUNT_DTYPE
     assert cm_lang.tolist() == [[2, 0], [0, 1]]    # b"ab" in 2 en docs
     assert cm_domain.tolist() == [[1, 1], [0, 1]]  # b"ab" in news + web
     assert domcount.tolist() == [[2, 0], [0, 1]]   # b"ab" in 2 en domains
-    assert dict(lang_domains) == {"en": 2, "fr": 1}
 
 
-def test_shard_cache_survives_cjk_rule_change(tmp_path):
-    """a shard written when order TOKENIZE_ORDER was kept in full records
-    that order and is still a valid superset for lower settings"""
+def test_shard_cache_keyed_on_tokenization(tmp_path, monkeypatch):
+    """Reuse is exact key equality: editing a tokenization constant rebuilds
+    instead of serving shards written under the old one. (Reuse used to be
+    order >=, which let features depend on the cache's history.)"""
     d = tmp_path / "corpus" / "web" / "zh"
     d.mkdir(parents=True)
     doc = d / "doc0.txt"
@@ -203,26 +228,79 @@ def test_shard_cache_survives_cjk_rule_change(tmp_path):
     items = [("web", "zh", str(doc))]
     shard_dir = str(tmp_path / "shards")
 
-    # old-style shard: every order-6 n-gram, header max_order = TOKENIZE_ORDER
-    [(_, _, shard_path)] = build_shards(items, shard_dir, TOKENIZE_ORDER, jobs=1)
-    old = load_shard(shard_path)
-    assert any(len(t) == TOKENIZE_ORDER and not is_cjk_bigram(t) for t in old)
+    [(_, _, shard_path)] = build_shards(items, shard_dir, jobs=1)
+    terms = load_shard(shard_path)
+    # order TOKENIZE_ORDER is CJK-only however long the byte orders run
+    assert {t for t in terms if len(t) == TOKENIZE_ORDER} == {"中文".encode()}
+    assert max(len(t) for t in terms if len(t) != TOKENIZE_ORDER) == MAX_NGRAM_ORDER
 
-    # a max_order=5 run reuses it untouched...
-    mtime = os.path.getmtime(shard_path)
-    build_shards(items, shard_dir, TOKENIZE_ORDER - 1, jobs=1)
-    assert os.path.getmtime(shard_path) == mtime
-    # ...and it is a superset of what that run needs
-    assert set(doc_ngrams(doc.read_bytes(), TOKENIZE_ORDER - 1)) <= set(old)
+    monkeypatch.setattr("py3langid.train.shards.MAX_NGRAM_ORDER", 3)
+    build_shards(items, shard_dir, jobs=1)
+    terms = load_shard(shard_path)
+    # rebuilt at the new order: the 4- and 5-grams are gone, not inherited
+    assert max(len(t) for t in terms if len(t) != TOKENIZE_ORDER) == 3
+    assert {t for t in terms if len(t) == TOKENIZE_ORDER} == {"中文".encode()}
 
-    # asking for the full order again after a CJK-only rebuild does rebuild
-    doc.write_bytes("中文abcdefg".encode())
-    build_shards(items, shard_dir, TOKENIZE_ORDER - 1, jobs=1)
-    new = load_shard(shard_path)
-    assert not any(len(t) == TOKENIZE_ORDER and not is_cjk_bigram(t) for t in new)
-    build_shards(items, shard_dir, TOKENIZE_ORDER, jobs=1)
-    full = load_shard(shard_path)
-    assert any(len(t) == TOKENIZE_ORDER and not is_cjk_bigram(t) for t in full)
+
+def test_select_counts_intersects_either_way():
+    """both branches (iterate the shard vs the feature index) must agree"""
+    from py3langid.train.shards import _select_counts
+
+    feat_index = {b"ab": 0, b"cd": 1, b"ef": 2}
+
+    def mapping(counts):
+        idx, vals = _select_counts(counts, feat_index)
+        assert idx.dtype == np.intp and vals.dtype == COUNT_DTYPE
+        return dict(zip(idx.tolist(), vals.tolist()))
+
+    assert mapping({b"ab": 3, b"zz": 9}) == {0: 3}                  # shard smaller
+    assert mapping({b"ab": 3, b"zz": 9, b"cd": 1, b"qq": 2}) == {0: 3, 1: 1}
+    assert mapping({}) == {}                                        # no overlap
+
+
+def test_index_corpus_first_appearance_order(tmp_path):
+    """class column order is first appearance along the sorted walk, NOT
+    alphabetical -- it fixes nb_classes, so pin it"""
+    from py3langid.train.stages import index_corpus
+
+    for domain, langs in (("aaa", ["en", "fr"]), ("bbb", ["de", "en"])):
+        for lang in langs:
+            d = tmp_path / domain / lang
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "doc0.txt").write_bytes(b"some text here")
+    items, langs, domains = index_corpus(tmp_path)
+    assert langs == ["en", "fr", "de"]   # "de" is absent from the first domain
+    assert domains == ["aaa", "bbb"]
+    assert len(items) == 4
+
+
+def test_cluster_features():
+    """a cluster spends its budget on non-junk features the quota missed,
+    ranked by IG over the cluster's own languages"""
+    from py3langid.train.stages import cluster_features
+
+    feats = [b"11", b"aa", b"bb", b"cc"]
+    # docfreq over langs (en, de, fr); IG within {en, de} descends 11 > aa > bb,
+    # and cc is uninformative there
+    cm_lang = np.array([[4, 0, 0], [3, 0, 0], [2, 0, 0], [2, 2, 0]])
+    lang_dist = np.array([4, 4, 4])
+    lang_index = {"en": 0, "de": 1, "fr": 2}
+
+    def run(base, k, clusters=(("en", "de"),)):
+        return cluster_features(cm_lang, lang_dist, lang_index, feats, base,
+                                clusters, k)
+
+    assert run(set(), 1) == {1}                # ranking: b"aa" beats b"bb"
+    # b"11" is digits-only and b"aa" is already selected, so the best
+    # *eligible* feature wins even though it ranks third by IG
+    assert run({1}, 1) == {2}
+    # no IG floor: once the eligible ranking is exhausted the budget takes
+    # uninformative features too
+    assert run({1}, 2) == {2, 3}
+    assert run(set(), 3) == {1, 2, 3}          # only b"11" stays excluded
+    assert run({1, 2, 3}, 2) == set()          # nothing eligible left
+    # a cluster naming a language absent from the corpus is skipped entirely
+    assert run(set(), 3, clusters=(("en", "xx"),)) == set()
 
 
 def test_build_scanner_longest_match():
@@ -297,15 +375,14 @@ def test_feature_counts(tmp_path):
         for text in texts:
             expected[:, lang_index[lang]] += brute(text)
 
-    got = feature_counts(items, rows, row_index, out, len(feats), lang_index, 0)
+    got = feature_counts(items, rows, row_index, out, len(feats), lang_index,
+                         0, jobs=1)
     assert np.array_equal(got, expected)
-    # ragged docs are padded to the batch's longest: chunking must not shift
-    # anything into a neighbour's counts, nor the padding into a feature
-    for chunk in (1, 2, 5, 100):
-        assert np.array_equal(
-            feature_counts(items, rows, row_index, out, len(feats),
-                           lang_index, 0, chunk=chunk), expected)
+    # worker partials are integer sums: the parallel result is exact
+    assert np.array_equal(
+        feature_counts(items, rows, row_index, out, len(feats), lang_index,
+                       0, jobs=2), expected)
     # doc_cap truncates before counting
     capped = feature_counts(items, rows, row_index, out, len(feats),
-                            lang_index, 2)
+                            lang_index, 2, jobs=1)
     assert capped.sum() < expected.sum()

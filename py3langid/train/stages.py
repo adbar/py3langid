@@ -9,15 +9,28 @@ from collections import defaultdict
 
 import numpy as np
 
-from .common import read_doc, walk_corpus
+from .common import (
+    DF_TOKENS,
+    SELECT_ORDERS,
+    TOKENIZE_ORDER,
+    MapPool,
+    is_cjk_bigram,
+    job_chunks,
+    read_doc,
+    set_shared,
+    shared,
+    walk_corpus,
+)
 
 
 def index_corpus(root):
     """Index a corpus/<domain>/<lang>/<doc> tree.
 
-    @returns (items, langs, domains): (domain, lang, path) string triples
-        plus the language and domain names in sorted (walk) order --
-        the class column order of every downstream matrix
+    @returns (items, langs, domains): (domain, lang, path) triples plus the
+        class names in FIRST-APPEARANCE order along the sorted walk -- the
+        column order of every matrix and of nb_classes. Deterministic, but
+        NOT alphabetical. Only stability within a run matters: nb_classes
+        ships with the parameters it indexes.
     """
     items = []
     langs, domains = {}, {}
@@ -28,19 +41,24 @@ def index_corpus(root):
     return items, list(langs), list(domains)
 
 
-def ngram_select(doc_count, max_order, tokens_per_order, min_order):
+def ngram_select(doc_count, tokens_per_order=DF_TOKENS, orders=SELECT_ORDERS):
     """
-    DF feature selection for byte-ngram tokenization: top tokens_per_order
-    terms by document frequency for each order. Ties break on the term
-    itself for determinism.
+    Top tokens_per_order terms by document frequency at each order in
+    `orders`; ties break on the term itself for determinism.
+
+    Order TOKENIZE_ORDER is restricted to CJK codepoint bigrams. Which
+    orders are admissible, and that rule, are decided here and only here --
+    shards may carry other terms, so order filtering belongs at selection.
     """
     buckets = defaultdict(list)
     for term, count in doc_count.items():
-        if min_order <= len(term) <= max_order:
-            buckets[len(term)].append((count, term))
+        order = len(term)
+        if order in orders and (
+                order != TOKENIZE_ORDER or is_cjk_bigram(term)):
+            buckets[order].append((count, term))
     features = set()
-    for order in range(min_order, max_order + 1):
-        top = heapq.nsmallest(tokens_per_order, buckets[order],
+    for bucket in buckets.values():
+        top = heapq.nsmallest(tokens_per_order, bucket,
                               key=lambda x: (-x[0], x[1]))
         features.update(term for _, term in top)
     return sorted(features)
@@ -116,7 +134,7 @@ def compute_IG_binarized(cm_pos, dist, chunk=8192):
     return ig
 
 
-def select_LD_features(ld, feats_per_lang, present=None):
+def select_LD_features(ld, feats_per_lang, present):
     """
     Top feats_per_lang features per language by LD weight (IG_lang - IG_domain).
     @param ld (num_term, num_lang) LD weight matrix
@@ -127,26 +145,9 @@ def select_LD_features(ld, feats_per_lang, present=None):
     """
     selected = set()
     for j, lang_w in enumerate(ld.T):
-        cand = (np.flatnonzero(present[:, j]) if present is not None
-                else np.arange(len(lang_w)))
+        cand = np.flatnonzero(present[:, j])
         selected.update(cand[np.argsort(lang_w[cand])[-feats_per_lang:]].tolist())
     return selected
-
-
-def learn_pc(class_counts):
-    """
-    @param class_counts per-class document counts
-    @returns nb_pc: log(P(C))
-    """
-    class_counts = np.asarray(class_counts)
-    assert (class_counts > 0).all(), "every language must have at least one document"
-    return np.log(class_counts)
-
-
-def prod_to_ptc(prod, alpha=1.0):
-    """@returns nb_ptc: log(P(t|C)), (num_term, num_class), from a
-    term x lang total-occurrence matrix"""
-    return np.log(alpha + prod) - np.log(alpha * prod.shape[0] + prod.sum(0))
 
 
 _JUNK_BYTES = frozenset(
@@ -157,12 +158,10 @@ _JUNK_BYTES = frozenset(
 def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
     """Top-k *new* features per confusable cluster by cluster-restricted IG.
 
-    One mechanism for what used to be two: the candidate set is the whole
-    feature pool, byte n-grams and the order-6 CJK codepoint bigrams alike,
-    so a cluster picks whichever discriminates its own languages. Features
-    already selected are skipped (a cluster spends its budget on evidence
-    the per-language quota missed), as are digit/punctuation-only
-    candidates and clusters with a language absent from the corpus.
+    Candidates are the whole feature pool, so a cluster picks whatever
+    discriminates its own languages. Skipped: already-selected features (the
+    budget goes to evidence the per-language quota missed), digit/punctuation
+    -only candidates, and clusters with a language absent from the corpus.
     @returns set of row indices to add"""
     added = set()
     selected = set(base)
@@ -184,40 +183,39 @@ def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
     return added
 
 
+def _feature_counts_chunk(chunk):
+    """@param chunk (lang column, path) pairs
+    @returns a (n_feats, num_langs) int64 partial"""
+    nm, rowbase, out, n_feats, num_langs, doc_cap = shared()
+    counts = np.zeros((n_feats, num_langs), dtype=np.int64)
+    for col, path in chunk:
+        # the runtime's walk (langid._raw_score)
+        state, visits = 0, {}
+        for letter in read_doc(path, doc_cap):
+            state = nm[rowbase[state] + letter]
+            f = out[state]
+            if f >= 0:
+                visits[f] = visits.get(f, 0) + 1
+        if visits:
+            counts[list(visits), col] += np.fromiter(
+                visits.values(), dtype=np.int64, count=len(visits))
+    return counts
+
+
 def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
-                   doc_cap, chunk=8000):
+                   doc_cap, jobs=None):
     """Per-(feature, lang) occurrence counts: walk every doc through the DFA
-    and credit the one feature each state emits. These are the NB numerators
-    the runtime accumulates, unlike shard n-gram totals, which count every
-    match at every position.
+    as the runtime does, crediting the one feature each state emits (the NB
+    numerators; shard totals count every match at every position instead).
+    Integer partials per worker keep the sum exact under any scheduling.
     @returns (n_feats, num_langs) int64
     """
-    num_langs = len(lang_index)
-    lang_row = np.array([lang_index[lang] for _, lang, _ in items])
-    nm = np.asarray(tk_nextmove, dtype=np.int32)
-    rowbase = np.asarray(tk_row, dtype=np.int32) << 8  # as the runtime walks
-    num_states = len(tk_output)
-    # mapped to features inside the walk, so nothing state-shaped is ever
-    # materialized. Two dump slots keep it branch-free: state num_states for
-    # anything off the table, feature n_feats for that plus non-emitting
-    # states and a short doc's padding
-    emits = np.asarray(tk_output, dtype=np.int32)
-    emits = np.append(np.where(emits >= 0, emits, n_feats), n_feats)
-    counts = np.zeros((n_feats + 1) * num_langs, dtype=np.int64)
-    for lo in range(0, len(items), chunk):
-        docs = [read_doc(path, doc_cap) for _, _, path in items[lo:lo + chunk]]
-        lens = np.array([len(b) for b in docs], dtype=np.int32)
-        maxlen = int(lens.max())
-        B = np.zeros((len(docs), maxlen), dtype=np.uint8)
-        for i, b in enumerate(docs):
-            B[i, :len(b)] = np.frombuffer(b, dtype=np.uint8)
-        keys = np.full((len(docs), maxlen), n_feats, dtype=np.int64)
-        s = np.zeros(len(docs), dtype=np.int32)
-        for p in range(maxlen):
-            active = lens > p
-            s = np.where(active, nm[rowbase[s] + B[:, p]], 0)
-            keys[active, p] = emits[np.minimum(s[active], num_states)]
-        keys *= num_langs
-        keys += np.asarray(lang_row[lo:lo + chunk], dtype=np.int64)[:, None]
-        counts += np.bincount(keys.ravel(), minlength=len(counts))
-    return counts.reshape(n_feats + 1, num_langs)[:n_feats]
+    tasks = [(lang_index[lang], path) for _, lang, path in items]
+    counts = np.zeros((n_feats, len(lang_index)), dtype=np.int64)
+    rowbase = [r << 8 for r in tk_row]
+    with MapPool(jobs, set_shared,
+                 (tk_nextmove, rowbase, tk_output, n_feats, len(lang_index),
+                  doc_cap)) as f:
+        for partial in f(_feature_counts_chunk, job_chunks(tasks, jobs)):
+            counts += partial
+    return counts
