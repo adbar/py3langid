@@ -130,7 +130,7 @@ def drop(corpus, paths):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="verifier model file (npz.xz or legacy plzma)")
+    parser.add_argument("--model", required=True, help="verifier model file (npz.xz)")
     parser.add_argument("--paragraphs", action="store_true",
                         help="filter foreign paragraphs instead of whole docs")
     parser.add_argument("-j", "--jobs", type=int, default=8)

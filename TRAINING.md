@@ -21,17 +21,23 @@ generalization.
 
 ## Our setting
 
-137 languages + zxx (138 classes; nb merged into no 2026-08-26, both
-were Bokmål), **4 domains**,
-uniform `--max-docs-per-lang 300`, docs truncated to 3,000 bytes at
-tokenization (`--doc_cap`, equalizes byte weight across domains).
+139 languages + zxx + the two internal script-split classes (`srl`, `uzc`)
+= **142 NB classes / 140 public labels** (nb merged into no 2026-08-26,
+both were Bokmål), **7 domains**, 130,914 docs. Uniform
+`--max-docs-per-lang 300`, docs truncated to 3,000 bytes at tokenization
+(`--doc_cap`, equalizes byte weight across domains).
 
-| Domain  | Source                    | Langs | Register       |
-|---------|---------------------------|-------|----------------|
-| tatoeba | user sentences (CC BY)    | ~93   | conversational |
-| cc100   | CommonCrawl 2018 filtered | 85    | web            |
-| wiki    | cirrus dumps              | 96    | encyclopedia   |
-| leipzig | Leipzig Corpora (news)    | 89    | news           |
+| Domain      | Source                    | Docs   | Register       |
+|-------------|---------------------------|--------|----------------|
+| wiki        | cirrus dumps              | 37,901 | encyclopedia   |
+| leipzig     | Leipzig Corpora (news)    | 30,538 | news           |
+| cc100       | CommonCrawl 2018 filtered | 29,006 | web            |
+| tatoeba     | user sentences (CC BY)    | 18,864 | conversational |
+| glotcc      | GlotCC-V1 (topup)         |  9,381 | web            |
+| glot500     | Glot500 (topup)           |  4,624 | mixed          |
+| glotsparse  | GlotSparse (topup)        |    600 | web            |
+
+The last three are `topup.py` sources for thin classes, not general domains.
 
 Dropped by measurement: **bible** (negative LOO contribution) and **opensub**
 (+0.08 overall, hurt every confusable pair; decision 2026-08-26). Tatoeba is
@@ -84,17 +90,37 @@ python -m py3langid.train.train -m model_dir corpus
 ```
 
 Bare defaults reproduce the release config (order 2-5, doc_cap 3000,
-df_tokens 60000, feats_per_lang 900); every knob is overridable for sweeps.
+df_tokens 60000, feats_per_lang 1050); every knob is overridable for sweeps.
 Class priors are `log(per-class doc counts)`: the old `--prior_cap 1200` was
 measured to be a no-op (counts run 135..1318, clipping four classes by
 ≤0.09 nats) and is gone, while dropping the priors altogether costs
-CommonLID −519 labels (p=2e-61), so they stay as-is. Tokenization
-happens once into per-(domain,lang) n-gram count shards cached at
-`CORPUS_DIR.shards` (`--shards` overrides). Shards store orders 1..max_order
-requested; a higher-order cache serves all lower orders, and `--doc_cap` is
-part of both the shard filename and the cache key. All later stages are
-dict/numpy algebra over shards. Deterministic: same corpus + settings →
-byte-identical model. Warm run ~60s at the release config.
+CommonLID −519 labels (p=2e-61), so they stay as-is. Tokenization happens
+once into per-(domain,lang) shards cached at `CORPUS_DIR.shards`
+(`--shards` overrides), holding document frequency for every *selectable*
+term: orders 2..max_order in full, plus — since byte order 5 cannot span
+two 3-byte codepoints — only the CJK codepoint bigrams at order 6. A
+higher-order cache serves lower orders, and `--doc_cap` is part of both the
+shard filename and the cache key. All later stages are dict/numpy algebra
+over shards. Deterministic: same corpus + settings → byte-identical model.
+Warm run ~65s at the release config.
+
+Three memory/size fixes landed 2026-08-31, all verified to leave the
+selected feature list and the shipped model byte-identical:
+
+- **order 6 is CJK-only.** Every other order-6 n-gram was counted and then
+  dropped unread — 64% of the global term tally, 49% of shard bytes, for
+  21k terms actually used. Shard cache 1.8 GB → 924 MB, global terms 41.6M
+  → 15.4M. Shards written before the change record max_order 6 and stay
+  valid as supersets, so clear the cache to realise the savings.
+- **`merge_docfreq` chunks by a fixed 8 shards**, not one chunk per job: a
+  per-job chunk grew a near-global Counter in every worker before pickling
+  it back (8.7 GB parent peak at `-j 4`). `count_matrices` keeps
+  one-chunk-per-job, whose partials are dense matrices.
+- **count matrices are int32**, not int64: document frequencies bounded by
+  docs per class (measured max 1318), and every worker allocates the full
+  `nf × nlang` matrix and ships it through the pool.
+
+Peak is now 2.4 GB at `-j 10` (merge), cold shard build 29s, merge 28s.
 
 ## Cluster features (unified 2026-08-29)
 
@@ -138,7 +164,7 @@ votes ~2.3 times with strictly nested n-grams, which Naive Bayes was
 multiplying as if independent.
 
 `train.py` therefore estimates the NB numerators from a **scanner corpus
-pass** (`state_visit_counts` then `feature_counts`) rather than from shard
+pass** (`feature_counts`) rather than from shard
 n-gram totals, so training counts exactly what the runtime counts.
 
 This subsumed the gated blend, which is gone (`blend_ptc`, `BLEND_CLUSTERS`,
@@ -152,8 +178,15 @@ cost is unchanged: the scanner pass replaces the blend's state-visit pass.
 
 Note: with no blend, featureless input (no selected n-gram anywhere, e.g.
 a 2-byte string) returns a flat score of 0.0 — a uniform distribution
-under `norm_probs`, so `min_confidence` abstains. The runtime still reads
-models that ship blend arrays or the older multi-match CSR output.
+under `norm_probs`, so `min_confidence` abstains. Blend arrays are ignored
+if a model still ships them, but the older multi-match CSR output is not
+readable: `modelio` requires `nextmove_row` and `out_feat`.
+
+`build_scanner` returns the DFA as the file and the runtime both use it:
+the distinct transition rows plus a state -> row index. A state with no
+outgoing edges keeps its fail state's row, which is every duplicate there
+is (38,270 rows for 104,518 states), so the flat table is never allocated
+and `save_model`/`load_model` are inverses.
 
 ## Evaluation
 

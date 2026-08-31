@@ -28,11 +28,7 @@ def corpus_dir(tmp_path):
 
 
 def test_training_pipeline(corpus_dir, tmp_path):
-    import base64
-    import bz2
-    import pickle
-
-    from py3langid.modelio import expand_nextmove, load_model
+    from py3langid.modelio import load_model, save_model
     from py3langid.train.train import main
 
     model_dir = tmp_path / "model"
@@ -40,7 +36,7 @@ def test_training_pipeline(corpus_dir, tmp_path):
     common_args = [
         "-j", "1",
         "--max_order", "2",
-        "--min_order", "1",
+        "--min_order", "2",
         "--df_tokens", "100",
         "--feats_per_lang", "20",
         str(corpus_dir),
@@ -61,14 +57,13 @@ def test_training_pipeline(corpus_dir, tmp_path):
     lang, _ = lid.classify("This is a test")
     assert isinstance(lang, str)
 
-    # Legacy loader compat: same model re-encoded as bz2+base64
-    ptc, pc, classes, rows, row_index, output = load_model(model_path)[:6]
-    model = (ptc, pc, classes, expand_nextmove(rows, row_index), output)
-    legacy_path = tmp_path / "model_legacy"
-    legacy_path.write_bytes(base64.b64encode(bz2.compress(pickle.dumps(model))))
-    lid_legacy = LanguageIdentifier.from_modelpath(str(legacy_path))
-    lang2, _ = lid_legacy.classify("This is a test")
-    assert isinstance(lang2, str)
+    # save_model and load_model are inverses: re-saving what was loaded
+    # reproduces the file byte for byte
+    resaved = tmp_path / "model_resaved.npz.xz"
+    save_model(resaved, load_model(model_path))
+    assert resaved.read_bytes() == model_path.read_bytes()
+    lang2, _ = LanguageIdentifier.from_modelpath(str(resaved)).classify("This is a test")
+    assert lang2 == lang
 
     # Determinism: a rerun (served from cached shards) produces the same model
     rerun_dir = tmp_path / "model_rerun"

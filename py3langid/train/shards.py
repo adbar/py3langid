@@ -3,15 +3,23 @@ shards.py -
 Per-(domain, lang) n-gram count shards.
 
 One tokenization pass over the corpus produces, for each (domain, lang)
-directory, two dicts covering all byte n-grams of order 1..max_order:
-term -> document frequency and term -> total occurrence count. Every
-downstream training stage is algebra over these shards, so corpus edits
-only retokenize the directories they touch and setting changes retokenize
-nothing.
+directory, a term -> document frequency dict covering every selectable term
+(see doc_ngrams). Feature selection is algebra over these shards, so corpus
+edits only retokenize the directories they touch and setting changes
+retokenize nothing. (The NB parameters are counted separately, by
+feature_counts, because the runtime credits one longest match per byte
+position rather than every n-gram occurrence.)
+
+Selection needs exactly two passes: merge_docfreq tallies globally to
+choose the candidate pool, then count_matrices projects the shards onto
+it. Everything the IG stage needs -- per-lang and per-domain document
+frequency plus per-lang domain presence -- comes out of that second pass.
 
 Shard file layout: two marshal objects, a (key, max_order) header
-followed by the (docfreq, totalfreq) payload. The key hashes the shard
-directory's (filename, size, mtime) list, so it is location-independent.
+followed by the docfreq payload. The key hashes the shard directory's
+(filename, size, mtime) list, so it is location-independent. A cached shard
+is reused when its max_order is at least the one asked for; shards written
+before the CJK-only rule record TOKENIZE_ORDER and are still supersets.
 
 All aggregations parallelize over shards and reduce integer partial sums,
 which keeps them exact and deterministic regardless of worker scheduling.
@@ -24,17 +32,43 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
-from .common import MapPool, job_count, read_doc
+from .common import (
+    MIN_NGRAM_ORDER,
+    TOKENIZE_ORDER,
+    MapPool,
+    is_cjk_bigram,
+    job_count,
+    read_doc,
+)
+
+# small chunks keep each worker's partial Counter small (one chunk per job
+# grew a near-global Counter in every worker: 8.7 -> 4.7 GB peak)
+MERGE_SHARDS_PER_CHUNK = 8
+
+# document frequencies, bounded by docs per class (~10^3); int32 halves the
+# count matrices, which every worker allocates in full and ships back
+COUNT_DTYPE = np.int32
 
 
-def count_ngrams(data, max_order):
-    """term -> occurrence count over all byte n-grams of order 1..max_order."""
-    counts = Counter()
+def doc_ngrams(data, max_order):
+    """Distinct terms one doc contributes: byte n-grams of order
+    MIN_NGRAM_ORDER..max_order, plus -- when max_order stops short of it --
+    only the CJK codepoint bigrams at TOKENIZE_ORDER, the rest of that order
+    being unselectable. Orders below MIN_NGRAM_ORDER are unselectable too."""
+    terms = set()
     n = len(data)
+    cjk_order = TOKENIZE_ORDER if max_order < TOKENIZE_ORDER else 0
     for i in range(n):
-        for k in range(1, min(max_order, n - i) + 1):
-            counts[data[i:i + k]] += 1
-    return counts
+        for k in range(MIN_NGRAM_ORDER, min(max_order, n - i) + 1):
+            terms.add(data[i:i + k])
+        # only 3+3 bytes can pass is_cjk_bigram, and a codepoint >= U+2E80
+        # has lead byte >= 0xE2: two comparisons skip almost every position
+        if cjk_order and i + cjk_order <= n \
+                and data[i] >= 0xE2 and data[i + 3] >= 0xE2:
+            term = data[i:i + cjk_order]
+            if is_cjk_bigram(term):
+                terms.add(term)
+    return terms
 
 
 def group_items(items):
@@ -53,11 +87,16 @@ def _group_key(paths, doc_cap):
     return h.hexdigest()
 
 
-def _chunk(seq, jobs):
-    """Split seq into one contiguous chunk per job."""
-    pieces = job_count(jobs)
-    size = max(1, -(-len(seq) // pieces))
+def _chunks(seq, size):
+    """Split seq into contiguous chunks of at most `size` items."""
+    size = max(1, size)
     return [seq[i:i + size] for i in range(0, len(seq), size)]
+
+
+def _job_chunks(seq, jobs):
+    """One contiguous chunk per job: for reducers whose partial is a dense
+    matrix, where more chunks would mean more transfers."""
+    return _chunks(seq, -(-len(seq) // job_count(jobs)))
 
 
 def _setup_build(max_order, doc_cap):
@@ -80,16 +119,13 @@ def _build_shard(arg):
         pass
 
     docfreq = Counter()
-    totalfreq = Counter()
     for path in paths:
-        counts = count_ngrams(read_doc(path, __doc_cap), __max_order)
-        totalfreq.update(counts)
-        docfreq.update(counts.keys())
+        docfreq.update(doc_ngrams(read_doc(path, __doc_cap), __max_order))
 
     tmp_path = shard_path + '.tmp'
     with open(tmp_path, 'wb') as f:
         marshal.dump((key, __max_order), f)
-        marshal.dump((dict(docfreq), dict(totalfreq)), f)
+        marshal.dump(dict(docfreq), f)
     os.replace(tmp_path, shard_path)
     return shard_path, True
 
@@ -118,7 +154,7 @@ def build_shards(items, shard_dir, max_order, jobs=None, doc_cap=0):
 
 
 def load_shard(shard_path):
-    """@returns the (docfreq, totalfreq) dicts of a shard."""
+    """@returns the term -> document frequency dict of a shard."""
     with open(shard_path, 'rb') as f:
         marshal.load(f)
         return marshal.load(f)
@@ -127,8 +163,7 @@ def load_shard(shard_path):
 def _merge_chunk(chunk):
     merged = Counter()
     for _, _, shard_path in chunk:
-        docfreq, _ = load_shard(shard_path)
-        merged.update(docfreq)
+        merged.update(load_shard(shard_path))
     return merged
 
 
@@ -136,7 +171,8 @@ def merge_docfreq(shard_items, jobs=None):
     """Global term -> document frequency over all shards."""
     doc_count = Counter()
     with MapPool(jobs) as f:
-        for partial in f(_merge_chunk, _chunk(shard_items, jobs)):
+        for partial in f(_merge_chunk,
+                         _chunks(shard_items, MERGE_SHARDS_PER_CHUNK)):
             doc_count.update(partial)
     return doc_count
 
@@ -146,6 +182,8 @@ def _select_counts(counts, feat_index):
     smaller of the two.
     @returns (row indices, counts) with unique indices
     """
+    # a shard may share no feature with the pool (e.g. a lang whose docs are
+    # all empty); the arrays keep `+=` typed rather than inferring float64
     idx, vals = [], []
     if len(counts) < len(feat_index):
         for feat, count in counts.items():
@@ -159,7 +197,7 @@ def _select_counts(counts, feat_index):
             if count:
                 idx.append(i)
                 vals.append(count)
-    return idx, vals
+    return np.asarray(idx, dtype=np.intp), np.asarray(vals, dtype=COUNT_DTYPE)
 
 
 def _setup_counts(feat_index, lang_index, domain_index):
@@ -169,49 +207,42 @@ def _setup_counts(feat_index, lang_index, domain_index):
     __domain_index = domain_index
 
 
+def _zero_matrices(nf, nl, nd):
+    """count_matrices' accumulators; shared with the workers so the dtypes
+    cannot drift apart."""
+    return (np.zeros((nf, nl), dtype=COUNT_DTYPE),
+            np.zeros((nf, nd), dtype=COUNT_DTYPE),
+            np.zeros((nf, nl), dtype=np.int8))
+
+
 def _matrices_chunk(chunk):
-    cm_lang = np.zeros((len(__feat_index), len(__lang_index)), dtype=int)
-    cm_domain = np.zeros((len(__feat_index), len(__domain_index)), dtype=int)
-    prod = np.zeros((len(__feat_index), len(__lang_index)), dtype=int)
+    cm_lang, cm_domain, domcount = _zero_matrices(
+        len(__feat_index), len(__lang_index), len(__domain_index))
     for domain, lang, shard_path in chunk:
-        docfreq, totalfreq = load_shard(shard_path)
-        idx, vals = _select_counts(docfreq, __feat_index)
-        cm_lang[idx, __lang_index[lang]] += vals
+        idx, vals = _select_counts(load_shard(shard_path), __feat_index)
+        j = __lang_index[lang]
+        cm_lang[idx, j] += vals
         cm_domain[idx, __domain_index[domain]] += vals
-        idx, vals = _select_counts(totalfreq, __feat_index)
-        prod[idx, __lang_index[lang]] += vals
-    return cm_lang, cm_domain, prod
-
-
-def domain_presence(shard_items, features, lang_index):
-    """@returns ((num_term, num_lang) count of domains in which the term
-    occurs for that language, {lang: num_domains})"""
-    pos = {f: i for i, f in enumerate(features)}
-    counts = np.zeros((len(features), len(lang_index)), dtype=np.int8)
-    feat_set = set(features)
-    lang_domains = Counter()
-    for _domain, lang, shard_path in shard_items:
-        docfreq, _ = load_shard(shard_path)
-        j = lang_index[lang]
-        lang_domains[lang] += 1
-        for f in feat_set.intersection(docfreq):
-            counts[pos[f], j] += 1
-    return counts, lang_domains
+        # one shard = one (domain, lang) dir, so presence is a per-shard flag
+        domcount[idx, j] += 1
+    return cm_lang, cm_domain, domcount
 
 
 def count_matrices(shard_items, features, lang_index, domain_index, jobs=None):
-    """Document-frequency count matrices for the IG computation, plus the
-    total-occurrence matrix (the NB numerators), in one pass over the shards.
-    @returns (term x lang docfreq, term x domain docfreq, term x lang
-        totalfreq) int arrays, rows follow `features`
+    """Everything the IG stage needs, in one pass over the shards.
+    @returns (term x lang docfreq, term x domain docfreq, term x lang count
+        of domains the term occurs in, {lang: num_domains}); the matrix rows
+        follow `features`
     """
     feat_index = {f: i for i, f in enumerate(features)}
-    cm_lang = np.zeros((len(features), len(lang_index)), dtype=int)
-    cm_domain = np.zeros((len(features), len(domain_index)), dtype=int)
-    prod = np.zeros((len(features), len(lang_index)), dtype=int)
+    cm_lang, cm_domain, domcount = _zero_matrices(
+        len(features), len(lang_index), len(domain_index))
     with MapPool(jobs, _setup_counts, (feat_index, lang_index, domain_index)) as f:
-        for part_lang, part_domain, part_prod in f(_matrices_chunk, _chunk(shard_items, jobs)):
+        for part_lang, part_domain, part_dom in f(
+                _matrices_chunk, _job_chunks(shard_items, jobs)):
             cm_lang += part_lang
             cm_domain += part_domain
-            prod += part_prod
-    return cm_lang, cm_domain, prod
+            domcount += part_dom
+    # one shard per (domain, lang) dir, so this is just a tally of shards
+    lang_domains = Counter(lang for _, lang, _ in shard_items)
+    return cm_lang, cm_domain, domcount, lang_domains

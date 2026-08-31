@@ -165,10 +165,17 @@ def gather_cc100(out_root, lang, max_docs):
 
 def gather_wiki(out_root, lang, max_docs, date):
     code = WIKI_CODE.get(lang, lang)
-    # cirrus dumps vanish upstream: keep the consumed .bz2 prefix on disk
-    cache = RAW_CACHE / "wiki" / f"{code}wiki-{date}.json.bz2.prefix"
-    if cache.exists():
-        resp = open(cache, "rb")  # noqa: SIM115
+    # cirrus dumps vanish upstream: keep the consumed .bz2 prefix on disk.
+    # The prefix is only as long as the run that wrote it needed, so the doc
+    # target is part of the name and only a >= prefix may be reused -- else a
+    # later, larger run would hit EOF early and silently gather too little.
+    stem = f"{code}wiki-{date}.json.bz2.head"
+    cache = RAW_CACHE / "wiki" / f"{stem}{max_docs}"
+    usable = [p for p in sorted(cache.parent.glob(f"{stem}*"))
+              if p.name[len(stem):].isdigit()
+              and int(p.name[len(stem):]) >= max_docs]
+    if usable:
+        resp = open(usable[0], "rb")  # noqa: SIM115
     else:
         resp = _TeeReader(fetch(CIRRUS_URL.format(code=code, date=date)), cache)
     docs = []

@@ -21,22 +21,20 @@ from .common import (
     LABEL_ALIAS,
     MAX_NGRAM_ORDER,
     MIN_NGRAM_ORDER,
-    TOKENIZE_ORDER,
+    is_cjk_bigram,
 )
 from .scanner import build_scanner
-from .shards import build_shards, count_matrices, domain_presence, merge_docfreq
+from .shards import build_shards, count_matrices, merge_docfreq
 from .stages import (
     cluster_features,
     compute_IG,
     compute_IG_binarized,
     feature_counts,
     index_corpus,
-    is_cjk_bigram,
     learn_pc,
     ngram_select,
     prod_to_ptc,
     select_LD_features,
-    state_visit_counts,
 )
 
 
@@ -63,6 +61,11 @@ def main(argv=None):
     parser.add_argument("corpus", help="read corpus from CORPUS_DIR", metavar="CORPUS_DIR")
 
     args = parser.parse_args(argv)
+
+    if args.min_order < MIN_NGRAM_ORDER:
+        # shards only carry orders >= MIN_NGRAM_ORDER, so a lower setting
+        # would silently select nothing rather than shorter features
+        parser.error(f"--min_order must be >= {MIN_NGRAM_ORDER}")
 
     if args.jobs is None:
         args.jobs = min(10, mp.cpu_count())
@@ -92,8 +95,7 @@ def main(argv=None):
     # Tokenize the corpus into per-(domain, lang) n-gram count shards.
     # Cached shards are reused; only changed directories are re-tokenized.
     shard_dir = args.shards or os.path.normpath(args.corpus) + '.shards'
-    shard_items = build_shards(items, shard_dir,
-                               max(TOKENIZE_ORDER, args.max_order),
+    shard_items = build_shards(items, shard_dir, args.max_order,
                                args.jobs, args.doc_cap)
 
     doc_count = merge_docfreq(shard_items, args.jobs)
@@ -108,35 +110,41 @@ def main(argv=None):
     n_df = len(DFfeats)
     print(f"selected {n_df} DF features + {len(cjk_cand)} CJK candidates")
 
-    # Compute IG (and the NB numerators, in the same shard pass)
-    # prod (shard n-gram totals) is not retained: the NB numerators are
-    # counted below under the scanner's longest-match emission instead
-    cm_lang, cm_domain, _ = count_matrices(shard_items, features, lang_index,
-                                           domain_index, args.jobs)
+    # One shard pass for the whole IG stage: per-lang and per-domain document
+    # frequency plus each term's per-lang domain presence. The NB numerators
+    # are NOT counted here -- they come from the scanner's longest-match
+    # emission below, so shard n-gram totals are never needed.
+    cm_lang, cm_domain, domcount, lang_domains = count_matrices(
+        shard_items, features, lang_index, domain_index, args.jobs)
+
+    # a class with no counts would ship as a uniform, unlearnable label
+    empty = [lang for lang, j in lang_index.items() if not cm_lang[:, j].any()]
+    if empty:
+        parser.error(f"no n-grams for {len(empty)} class(es): {sorted(empty)} "
+                     "-- check for empty or unreadable docs")
 
     # Select features by LD weight (per-language IG minus domain IG),
     # candidates restricted to terms seen in >=2 of the language's domains
     print("computing information gain")
     ld = (compute_IG_binarized(cm_lang[:n_df], lang_dist)
           - compute_IG(cm_domain[:n_df], domain_dist)[:, None])
-    domcount, lang_domains = domain_presence(shard_items, DFfeats, lang_index)
     need = np.array([min(2, lang_domains[lang]) for lang in langs])
-    present = domcount >= need[None, :]
+    present = domcount[:n_df] >= need[None, :]
     LDidx = select_LD_features(ld, args.feats_per_lang, present)
     extra = cluster_features(cm_lang, lang_dist, lang_index, features, LDidx,
                              CLUSTERS, CLUSTER_K)
     n_cjk = sum(i >= n_df for i in extra)
     print(f"added {len(extra)} cluster features ({n_cjk} CJK bigrams)")
     LDidx |= extra
-    # one order for both LDfeats and nb_ptc's rows
-    LDorder = sorted(LDidx, key=features.__getitem__)
-    LDfeats = [features[i] for i in LDorder]
+    # term order fixes the scanner's feature indices, hence nb_ptc's rows
+    LDfeats = sorted(features[i] for i in LDidx)
     print(f'selected {len(LDfeats)} features')
 
     # Compile a scanner for the LDfeats (one longest match per position)
-    tk_nextmove, tk_output = build_scanner(LDfeats)
+    tk_nextmove, tk_row, tk_output = build_scanner(LDfeats)
     emitting = sum(f >= 0 for f in tk_output)
-    print(f"scanner: {len(tk_output)} states, {emitting} emitting")
+    print(f"scanner: {len(tk_output)} states, {emitting} emitting, "
+          f"{len(tk_nextmove) // 256} distinct transition rows")
 
     # Assemble the NB model (duplicate labels are fine:
     # classification returns nb_classes[argmax])
@@ -151,12 +159,11 @@ def main(argv=None):
     # NB numerators: count what the runtime accumulates, i.e. one longest
     # match per byte position, rather than every n-gram occurrence
     print("counting longest-match feature occurrences")
-    state_counts = state_visit_counts(items, tk_nextmove, len(tk_output),
-                                      lang_index, args.doc_cap)
-    nb_ptc = prod_to_ptc(feature_counts(state_counts, tk_output, len(LDfeats)))
+    nb_ptc = prod_to_ptc(feature_counts(items, tk_nextmove, tk_row, tk_output,
+                                        len(LDfeats), lang_index, args.doc_cap))
 
     # output the model (npz+LZMA, the format the runtime ships and loads)
-    model = nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output
+    model = nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output
     npz_path = os.path.join(model_dir, 'model.npz.xz')
     save_model(npz_path, model)
     print(f"wrote model to {npz_path} ({os.path.getsize(npz_path)} bytes)")

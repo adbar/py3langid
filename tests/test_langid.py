@@ -1,5 +1,6 @@
 
 import csv
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import py3langid as langid
-from py3langid.langid import MODEL_FILE, LanguageIdentifier
+from py3langid.langid import MODEL_FILE, RAW_FLOOR, LanguageIdentifier
 
 
 @pytest.fixture
@@ -46,7 +47,11 @@ def test_calibration_sqrt(norm_identifier):
 def test_featureless_input(identifier, norm_identifier):
     """no features -> a flat floor and zero confidence, in both modes"""
     raw = identifier.classify('hi')
-    assert raw[1] == 0.0  # finite: stays JSON-serializable
+    # finite (stays JSON-serializable) but below any real log-probability,
+    # so a caller thresholding raw scores never mistakes it for a hit
+    assert raw[1] == RAW_FLOOR
+    assert math.isfinite(raw[1])
+    assert raw[1] < identifier.classify('This is an English sentence.')[1]
     # the flat score makes every class column equally likely under norm_probs
     label, prob = norm_identifier.classify('hi')
     assert prob == pytest.approx(1 / len(identifier.nb_classes), rel=1e-6)
@@ -65,6 +70,21 @@ def test_unique_labels(identifier):
     assert identifier.labels == ['sr']
     assert identifier.rank('ovo je tekst za probu') == [('sr', pytest.approx(
         identifier.classify('ovo je tekst za probu')[1]))]
+
+
+def test_rank_takes_max_over_aliased_columns(identifier):
+    """each label appears once in rank(), scored by its best column"""
+    text = 'ovo je tekst za probu, ne znam sto to znaci'
+    scores = identifier._decide(text)
+    ranked = identifier.rank(text)
+
+    assert len(ranked) == len(identifier.labels)
+    assert {lang for lang, _ in ranked} == set(identifier.labels)
+    for lang, score in ranked:
+        cols = [i for i, c in enumerate(identifier.nb_classes) if c == lang]
+        assert score == pytest.approx(max(float(scores[i]) for i in cols))
+    # sr/uz really do exercise the multi-column path
+    assert any(identifier.nb_classes.count(c) == 2 for c in identifier.labels)
 
 
 def test_rank_agrees_with_classify(identifier):
@@ -118,7 +138,7 @@ def test_empty_and_short():
     for empty in ('', b''):
         lang, score = langid.classify(empty)
         assert isinstance(lang, str)
-        assert score == 0.0
+        assert score == RAW_FLOOR
         # finite, so the server's JSON stays valid for strict parsers
         json.dumps({'confidence': score}, allow_nan=False)
     # digit-only input has features since the fpl700 budget: routed to zxx
@@ -184,18 +204,11 @@ def test_cli_batch(tmp_path):
 
 
 def test_cli_external_model(tmp_path):
-    '''-m loads a model in the modelstring format (b64 + bz2 pickle)'''
-    import bz2
-    import pickle
-    from base64 import b64encode
-
+    '''-m loads an external model written by save_model'''
     from py3langid.langid import MODEL_DIR
-    from py3langid.modelio import expand_nextmove, load_model
-    ptc, pc, classes, nextmove, row, output = load_model(MODEL_DIR / MODEL_FILE)
-    # the pickle formats predate row dedup: expand to one row per state
-    raw = pickle.dumps((ptc, pc, classes, expand_nextmove(nextmove, row), output))
-    model_path = tmp_path / 'external.model'
-    model_path.write_bytes(b64encode(bz2.compress(raw, compresslevel=1)))
+    from py3langid.modelio import load_model, save_model
+    model_path = tmp_path / 'external.npz.xz'
+    save_model(model_path, load_model(MODEL_DIR / MODEL_FILE))
     result = subprocess.check_output(['langid', '-n', '-m', str(model_path)],
                                      input=b'This should be enough text.')
     assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
@@ -221,24 +234,24 @@ def test_min_confidence(norm_identifier):
         LanguageIdentifier.from_model_file(MODEL_FILE, min_confidence=0.5)
 
 
-def test_from_modelpath(tmp_path, identifier):
-    """from_modelpath auto-detects npz+LZMA and pickled-LZMA layouts"""
-    import lzma
-    import pickle
-
+def test_from_modelpath(identifier):
+    """from_modelpath loads the npz+LZMA layout from an arbitrary path"""
     from py3langid.langid import MODEL_DIR
     ident = LanguageIdentifier.from_modelpath(MODEL_DIR / MODEL_FILE)
     assert ident.classify('This should be enough text.')[0] == 'en'
 
-    # legacy pickle inside LZMA (flat ptc layout)
-    from py3langid.modelio import expand_nextmove, load_model
-    ptc, pc, classes, nextmove, row, output = load_model(MODEL_DIR / MODEL_FILE)
-    flat = expand_nextmove(nextmove, row)
-    plzma_path = tmp_path / 'model.plzma'
-    with lzma.open(plzma_path, 'wb') as f:
-        pickle.dump((ptc.ravel(), pc, classes, flat, output), f)
-    ident2 = LanguageIdentifier.from_modelpath(plzma_path)
-    assert ident2.classify('This should be enough text.')[0] == 'en'
+
+def test_external_model_failure_falls_back(tmp_path, caplog):
+    """an unusable -m path warns and falls back to the bundled model"""
+    import logging
+
+    from py3langid.langid import _load_identifier
+    bad = tmp_path / 'not-a-model.npz.xz'
+    bad.write_bytes(b'definitely not an xz stream')
+    with caplog.at_level(logging.WARNING):
+        ident = _load_identifier(str(bad))
+    assert 'Failed to load' in caplog.text
+    assert ident.classify('This should be enough text.')[0] == 'en'
 
 
 def test_score_log1p(identifier):
@@ -259,5 +272,5 @@ def test_score_log1p(identifier):
     expected = np.log1p(counts) @ np.asarray(identifier.nb_ptc, dtype=np.float32)[idx] \
         + identifier.nb_pc
     # norm_probs is off, so _decide returns the raw NB scores, per label
-    assert np.allclose(identifier._decide(text), identifier._collapse(expected),
+    assert np.allclose(identifier._decide(text), expected,
                        rtol=1e-4)

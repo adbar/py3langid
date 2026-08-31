@@ -46,29 +46,35 @@ def ngram_select(doc_count, max_order, tokens_per_order, min_order):
     return sorted(features)
 
 
-def entropy(v, axis=0):
-    """
-    Optimized implementation of entropy. This version is faster than that in
-    scipy.stats.distributions, particularly over long vectors.
-    """
-    v = np.array(v, dtype='float')
-    s = np.sum(v, axis=axis)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        rhs = np.nansum(v * np.log(v), axis=axis) / s
-        r = np.log(s) - rhs
-    # Where dealing with binarized events, it is possible that an event always
-    # occurs and thus has 0 information. In this case, the negative class
-    # will have frequency 0, resulting in log(0) being computed as nan.
-    # We replace these nans with 0
-    nan_index = np.isnan(rhs)
-    if nan_index.any():
-        r[nan_index] = 0
-    return r
+def _xlogx(v):
+    """v * log(v), taking 0 * log(0) as 0."""
+    log = np.zeros(v.shape, dtype=float)
+    np.log(v, where=v > 0, out=log)
+    return v * log
 
 
-def _present_absent(cm_pos, dist):
-    """@returns (num_term, num_event, 2) term-absent / term-present counts."""
-    return np.dstack((dist - cm_pos, cm_pos))
+def entropy(v, axis=-1):
+    """Entropy (nats) of count vectors along `axis`; an all-zero vector is 0."""
+    v = np.asarray(v, dtype=float)
+    total = v.sum(axis)
+    nonzero = total > 0
+    safe = np.where(nonzero, total, 1.0)
+    return np.where(nonzero, np.log(safe) - _xlogx(v).sum(axis) / safe, 0.0)
+
+
+def _binary_entropy(a, b):
+    """Entropy of the two-outcome counts (a, b), broadcast elementwise."""
+    total = a + b
+    nonzero = total > 0
+    safe = np.where(nonzero, total, 1.0)
+    return np.where(nonzero,
+                    np.log(safe) - (_xlogx(a) + _xlogx(b)) / safe, 0.0)
+
+
+# Both IG functions below evaluate
+#   IG = H(event) - P(term) H(event|term) - P(!term) H(event|!term)
+# directly on the counts (`n` docs, `dist[j]` in event j, `t[i]` containing
+# term i), so no contingency table is built and temporaries stay 2-D.
 
 
 def compute_IG(cm_pos, dist):
@@ -79,40 +85,35 @@ def compute_IG(cm_pos, dist):
     @param dist per-event document totals
     @returns (num_term,) IG values
     """
-    cm = _present_absent(cm_pos, dist)
-    x = cm.sum(axis=1)
-    term_w = x / x.sum(axis=1)[:, None].astype(float)
-    # Entropy of the term-present/term-absent events
-    e = entropy(cm, axis=1)
-    return entropy(dist) - (term_w * e).sum(axis=1)
+    present = np.asarray(cm_pos, dtype=float)
+    dist = np.asarray(dist, dtype=float)
+    n = dist.sum()
+    t = present.sum(1)
+    return entropy(dist) - (t * entropy(present)
+                            + (n - t) * entropy(dist - present)) / n
 
 
-def compute_IG_binarized(cm_pos, dist, chunk=16):
+def compute_IG_binarized(cm_pos, dist, chunk=8192):
     """
-    Information gain per term, binarized with respect to each event and
-    vectorized in chunks of events to bound the temp array size.
+    Information gain per term, binarized with respect to each event
+    (event j against the rest), chunked over terms to bound temporaries.
 
     @param cm_pos (num_term, num_event) counts of docs containing each term
     @param dist per-event document totals
     @returns (num_term, num_event) IG values
     """
-    cm = _present_absent(cm_pos, dist)
-    num_doc = dist.sum()
-    tot = cm.sum(axis=1)
-    ig = []
-    for lo in range(0, cm_pos.shape[1], chunk):
-        ev = cm[:, lo:lo + chunk, :]
-        # (term, event, p(term), p(lang|term))
-        cm_bin = np.stack((tot[:, None, :] - ev, ev), axis=2)
-
-        e = entropy(cm_bin, axis=2)
-        x = cm_bin.sum(axis=2)
-        term_w = x / x.sum(axis=2)[..., None].astype(float)
-
-        prior = np.stack((num_doc - dist[lo:lo + chunk], dist[lo:lo + chunk]),
-                         axis=1).astype(float) / num_doc
-        ig.append(entropy(prior.T)[None, :] - (term_w * e).sum(axis=2))
-    return np.hstack(ig)
+    dist = np.asarray(dist, dtype=float)
+    n = dist.sum()
+    prior = _binary_entropy(dist, n - dist)
+    ig = np.empty(cm_pos.shape, dtype=float)
+    for lo in range(0, len(cm_pos), chunk):
+        present = np.asarray(cm_pos[lo:lo + chunk], dtype=float)
+        t = present.sum(1)[:, None]
+        absent = dist - present
+        ig[lo:lo + chunk] = prior - (
+            t * _binary_entropy(present, t - present)
+            + (n - t) * _binary_entropy(absent, (n - t) - absent)) / n
+    return ig
 
 
 def select_LD_features(ld, feats_per_lang, present=None):
@@ -130,18 +131,6 @@ def select_LD_features(ld, feats_per_lang, present=None):
                 else np.arange(len(lang_w)))
         selected.update(cand[np.argsort(lang_w[cand])[-feats_per_lang:]].tolist())
     return selected
-
-
-def is_cjk_bigram(term):
-    """True for a 6-byte n-gram encoding exactly two CJK codepoints."""
-    if len(term) != 6:
-        return False
-    try:
-        s = term.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return len(s) == 2 and all(ord(ch) >= 0x2E80 for ch in s)
-
 
 
 def learn_pc(class_counts):
@@ -195,46 +184,40 @@ def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
     return added
 
 
-def state_visit_counts(items, tk_nextmove, num_states, lang_index,
-                       doc_cap, chunk=8000):
-    """Per-(DFA state, lang) visit counts over the corpus (one visit per
-    byte); visits to states >= num_states are dropped, matching runtime
-    scoring. @returns (num_states, num_langs) int64 counts"""
+def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
+                   doc_cap, chunk=8000):
+    """Per-(feature, lang) occurrence counts: walk every doc through the DFA
+    and credit the one feature each state emits. These are the NB numerators
+    the runtime accumulates, unlike shard n-gram totals, which count every
+    match at every position.
+    @returns (n_feats, num_langs) int64
+    """
     num_langs = len(lang_index)
     lang_row = np.array([lang_index[lang] for _, lang, _ in items])
     nm = np.asarray(tk_nextmove, dtype=np.int32)
-    counts = np.zeros((num_states + 1) * num_langs, dtype=np.int64)
+    rowbase = np.asarray(tk_row, dtype=np.int32) << 8  # as the runtime walks
+    num_states = len(tk_output)
+    # mapped to features inside the walk, so nothing state-shaped is ever
+    # materialized. Two dump slots keep it branch-free: state num_states for
+    # anything off the table, feature n_feats for that plus non-emitting
+    # states and a short doc's padding
+    emits = np.asarray(tk_output, dtype=np.int32)
+    emits = np.append(np.where(emits >= 0, emits, n_feats), n_feats)
+    counts = np.zeros((n_feats + 1) * num_langs, dtype=np.int64)
     for lo in range(0, len(items), chunk):
-        batch = items[lo:lo + chunk]
-        docs = [read_doc(path, doc_cap) for _, _, path in batch]
+        docs = [read_doc(path, doc_cap) for _, _, path in items[lo:lo + chunk]]
         lens = np.array([len(b) for b in docs], dtype=np.int32)
         maxlen = int(lens.max())
         B = np.zeros((len(docs), maxlen), dtype=np.uint8)
         for i, b in enumerate(docs):
             B[i, :len(b)] = np.frombuffer(b, dtype=np.uint8)
-        # sentinel row num_states collects padding and out-of-table states
-        ST = np.full((len(docs), maxlen), num_states, dtype=np.int32)
+        keys = np.full((len(docs), maxlen), n_feats, dtype=np.int64)
         s = np.zeros(len(docs), dtype=np.int32)
         for p in range(maxlen):
             active = lens > p
-            s = np.where(active, nm[((s << 8) | B[:, p])], 0)
-            ST[active, p] = np.minimum(s[active], num_states)
-        rows = np.asarray(lang_row[lo:lo + chunk], dtype=np.int64)
-        keys = ST * num_langs + rows[:, None]
+            s = np.where(active, nm[rowbase[s] + B[:, p]], 0)
+            keys[active, p] = emits[np.minimum(s[active], num_states)]
+        keys *= num_langs
+        keys += np.asarray(lang_row[lo:lo + chunk], dtype=np.int64)[:, None]
         counts += np.bincount(keys.ravel(), minlength=len(counts))
-    return counts.reshape(num_states + 1, num_langs)[:num_states]
-
-
-def feature_counts(state_counts, tk_output, n_feats):
-    """Per-(feature, lang) occurrence counts under longest-match emission:
-    each visit to a state credits the one feature that state emits.
-
-    These are the NB numerators the runtime actually accumulates, unlike
-    shard n-gram totals, which count every match at every position.
-    @returns (n_feats, num_langs) int64
-    """
-    out = np.asarray(tk_output)[:state_counts.shape[0]]
-    prod = np.zeros((n_feats, state_counts.shape[1]), dtype=np.int64)
-    emitting = np.flatnonzero(out >= 0)
-    np.add.at(prod, out[emitting], state_counts[emitting])
-    return prod
+    return counts.reshape(n_feats + 1, num_langs)[:n_feats]

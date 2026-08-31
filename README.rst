@@ -52,7 +52,7 @@ Basics:
     >>> text = 'This text is in English.'
     # identified language and probability
     >>> langid.classify(text)
-    ('en', -56.77429)
+    ('en', -68.562286)
     # unpack the result tuple in variables
     >>> lang, prob = langid.classify(text)
     # all potential languages
@@ -70,12 +70,15 @@ More options:
     >>> identifier.set_languages(['de', 'en', 'fr'])
     # this won't work well...
     >>> identifier.classify('这样不好')
-    ('en', -81.831665)
+    ('de', -99.862480)
 
     # normalization of probabilities to an interval between 0 and 1
     >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
     >>> identifier.classify('This should be enough text.')
-    ('en', 1.0)
+    ('en', 0.9944350)
+    # confidence is length-aware: short input scores lower on purpose
+    >>> identifier.classify('This is a test')
+    ('en', 0.6111202)
 
 
 On the command-line
@@ -85,11 +88,11 @@ On the command-line
 
     # basic usage with probability normalization
     $ echo "This should be enough text." | langid -n
-    ('en', 1.0)
+    ('en', 0.9935991)
 
     # define a subset of target languages
     $ echo "This won't be recognized properly." | langid -n -l fr,it,tr
-    ('it', 0.97038305)
+    ('fr', 0.48382696)
 
 
 Legacy documentation
@@ -293,7 +296,7 @@ probability normalization in library use, the user must instantiate their own
   >> from py3langid.langid import LanguageIdentifier, MODEL_FILE
   >> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
   >> identifier.classify("This is a test")
-  ('en', 0.9999999909903544)
+  ('en', 0.6111202)
 
 
 Training a model

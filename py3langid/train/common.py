@@ -10,12 +10,20 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
-# Pipeline defaults = the adopted release config (armE, 2026-08-27),
-# overridable via command-line options
+# Pipeline defaults = the adopted release config (armE, 2026-08-27;
+# FEATURES_PER_LANG raised to 1050 on 2026-08-31), overridable via
+# command-line options
 MAX_NGRAM_ORDER = 5 # largest order of n-grams to consider
 MIN_NGRAM_ORDER = 2 # smallest order of n-grams to consider
 DF_TOKENS = 60000 # candidate pool: top tokens by document frequency, per order
-FEATURES_PER_LANG = 900 # number of features to select for each language
+# Number of features per language. Raised 900 -> 1050 after a measured
+# sweep (k=950..1400): short input (<120 B) gains and long input (>=200 B)
+# loses, both monotonically in k, and 1050 is the pooled optimum. Keep this
+# PER-LANGUAGE rather than capping the total: at 142 languages the union
+# shares 33% of picks, so a global cap would make each new language shrink
+# every existing language's budget (~20 new languages would undo this raise)
+# and would starve exactly the script-novel additions, which share nothing.
+FEATURES_PER_LANG = 1050
 DOC_CAP = 3000 # bytes per doc at tokenization; equalizes doc byte weight
 
 # Confusable clusters get CLUSTER_K extra features each, chosen by
@@ -25,10 +33,22 @@ CLUSTERS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"),
 CLUSTER_K = 150
 
 # Extra candidate pool: byte order 5 cannot span two 3-byte codepoints, so
-# CJK codepoint bigrams are 6-byte n-grams (hence TOKENIZE_ORDER) offered
-# to the clusters alongside the DF pool.
+# CJK codepoint bigrams are 6-byte n-grams (hence TOKENIZE_ORDER) offered to
+# the clusters alongside the DF pool. They are the only use the pipeline has
+# for that order, so tokenization emits nothing else there.
 CJK_DF_FLOOR = 20
 TOKENIZE_ORDER = 6
+
+
+def is_cjk_bigram(term):
+    """True for a 6-byte n-gram encoding exactly two CJK codepoints."""
+    if len(term) != 6:
+        return False
+    try:
+        s = term.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return len(s) == 2 and all(ord(ch) >= 0x2E80 for ch in s)
 
 
 def latin_majority(doc):

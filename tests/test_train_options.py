@@ -15,23 +15,22 @@ def test_ngram_select_min_order():
 
 
 def _shard_counts(tmp_path, doc_cap):
+    """@returns the shard's docfreq dict (order 2, the lowest counted)."""
     doc = tmp_path / "doc0000.txt"
     doc.write_bytes(b"abcdef")
     shard = tmp_path / "shard"
-    _setup_build(1, doc_cap)
+    _setup_build(2, doc_cap)
     _build_shard((str(shard), _group_key([str(doc)], doc_cap), [str(doc)]))
     with open(shard, "rb") as f:
         marshal.load(f)
-        docfreq, totalfreq = marshal.load(f)
-    return docfreq, totalfreq
+        return marshal.load(f)
 
 
 def test_doc_cap_truncates(tmp_path):
-    docfreq, totalfreq = _shard_counts(tmp_path, doc_cap=3)
-    assert set(docfreq) == {b"a", b"b", b"c"}
-    assert totalfreq == {b"a": 1, b"b": 1, b"c": 1}
+    # cap 3 sees only b"abc", so b"cd" onwards is never tokenized
+    assert _shard_counts(tmp_path, doc_cap=3) == {b"ab": 1, b"bc": 1}
 
 
 def test_doc_cap_zero_reads_all(tmp_path):
-    docfreq, _ = _shard_counts(tmp_path, doc_cap=0)
-    assert set(docfreq) == {b"a", b"b", b"c", b"d", b"e", b"f"}
+    assert set(_shard_counts(tmp_path, doc_cap=0)) == {
+        b"ab", b"bc", b"cd", b"de", b"ef"}
