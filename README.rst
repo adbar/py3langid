@@ -118,6 +118,8 @@ Web service
 -----------
 
 ``langid -s`` serves language identification over HTTP (default port 9008).
+Use the ``langid`` console script; ``python -m py3langid.langid`` is not
+supported.
 Endpoints ``/detect`` and ``/rank`` accept GET, POST, and PUT:
 
 .. code-block:: bash
@@ -138,7 +140,9 @@ original ``langid.py`` are not supported.
 Training a model
 ----------------
 
-``python -m py3langid.train.train -m model_dir corpus_dir`` — see
+``python -m py3langid.train.train -m model_dir corpus_dir``, run from a
+clone of the repository (the training code is not part of the PyPI
+package) — see
 `TRAINING.md <https://github.com/adbar/py3langid/blob/master/TRAINING.md>`_
 for corpus layout, data gathering, hygiene, and pipeline design. Training
 is deterministic: the same corpus and settings reproduce the model byte for

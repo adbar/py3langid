@@ -4,9 +4,11 @@ import multiprocessing as mp
 import sys
 import unicodedata
 from collections.abc import Callable
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
+
+from ..langid import decode_trimmed
 
 MAX_NGRAM_ORDER = 5
 MIN_NGRAM_ORDER = 2
@@ -14,6 +16,7 @@ DF_TOKENS = 60000        # candidate pool per order
 FEATURES_PER_LANG = 1050 # per-language, not global (keeps script-novel langs viable)
 DOC_CAP = 3000           # byte budget: gathering, tokenization, verifier, zxx
 MIN_DOC = 500
+MIN_DOMAINS = 2          # feature selection and topup both target this
 
 CLUSTERS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"),
             ("zh", "yue", "wuu"))
@@ -93,20 +96,26 @@ def walk_corpus(root, skip_langs=(), pattern="*.txt"):
 
 def nfc_bytes(data):
     """NFC-normalize UTF-8 bytes, trimming partial trailing codepoints."""
-    for trim in range(4):
-        chunk = data[:len(data) - trim] if trim else data
-        try:
-            text = chunk.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        return unicodedata.normalize("NFC", text).encode("utf-8")
-    return data
+    text = decode_trimmed(data)
+    if text is None:
+        return data
+    return unicodedata.normalize("NFC", text).encode("utf-8")
 
 
 def read_doc(path, cap=0):
     """Read NFC-normalized doc bytes, truncated to cap (0 = no cap)."""
     with open(path, "rb") as f:
         return nfc_bytes(f.read(cap) if cap else f.read())
+
+
+def drop(corpus, paths):
+    """Move docs to a sibling <corpus>_dropped tree, keeping relative paths."""
+    dropped_root = Path(str(corpus).rstrip("/") + "_dropped")
+    for p in paths:
+        src = Path(p)
+        dst = dropped_root / src.relative_to(corpus)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
 
 
 def job_count(processes=None):
@@ -145,9 +154,8 @@ def MapPool(processes=None, initializer=None, initargs=None, chunksize=1):
 
     if processes > 1:
         ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
-        with closing(ctx.Pool(processes, initializer, initargs)) as pool:
+        with ctx.Pool(processes, initializer, initargs) as pool:
             yield lambda fn, chunks: pool.imap_unordered(fn, chunks, chunksize)
-        pool.join()
     else:
         if initializer is not None:
             initializer(*initargs)

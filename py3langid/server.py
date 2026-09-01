@@ -26,35 +26,32 @@ def application(environ, start_response):
     if method not in ('GET', 'POST', 'PUT'):
         return _return_response(start_response, 405, None, f'{method} not allowed')
 
-    data = _get_data(environ)
+    data = _get_data(environ, method)
     if data is None:
         return _return_response(start_response, 400, None, 'No data provided')
 
     return _return_response(start_response, 200, handler(data), None)
 
 
-def _get_data(environ):
-    method = environ['REQUEST_METHOD']
-    if method in ('PUT', 'POST'):
-        try:
-            length = int(environ.get('CONTENT_LENGTH', 0))
-        except ValueError:
-            return None
-        if length <= 0:
-            return None
-        data = environ['wsgi.input'].read(length)
-        if method == 'POST':
-            try:
-                data = parse_qs(data)[b'q'][0]
-            except KeyError:
-                pass
-        return data
+def _get_data(environ, method):
     if method == 'GET':
         try:
             return parse_qs(environ.get('QUERY_STRING', ''))['q'][0]
         except KeyError:
             return None
-    return None
+    try:
+        length = int(environ.get('CONTENT_LENGTH', 0))
+    except ValueError:
+        return None
+    if length <= 0:
+        return None
+    data = environ['wsgi.input'].read(length)
+    if method == 'POST':
+        try:
+            data = parse_qs(data)[b'q'][0]
+        except KeyError:
+            pass
+    return data
 
 
 def _return_response(start_response, status_code, response_data, response_details):

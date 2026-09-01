@@ -13,6 +13,7 @@ from .common import (
     CLUSTERS,
     FEATURES_PER_LANG,
     LABEL_ALIAS,
+    MIN_DOMAINS,
 )
 from .scanner import build_scanner
 from .shards import build_shards, count_matrices, merge_docfreq
@@ -47,11 +48,7 @@ def main(argv=None):
     if args.jobs is None:
         args.jobs = min(10, mp.cpu_count())
 
-    corpus_name = os.path.basename(args.corpus)
-    if args.model:
-        model_dir = args.model
-    else:
-        model_dir = os.path.join('.', corpus_name+'.model')
+    model_dir = args.model or os.path.join('.', os.path.basename(args.corpus) + '.model')
 
     os.makedirs(model_dir, exist_ok=True)
 
@@ -77,7 +74,7 @@ def main(argv=None):
     print(f"tallied document frequency of {len(doc_count)} terms")
 
     features = ngram_select(doc_count)
-    doc_count = None
+    del doc_count
     print(f"selected {len(features)} DF features")
 
     cm_lang, cm_domain, domcount = count_matrices(
@@ -92,7 +89,7 @@ def main(argv=None):
     print("computing information gain")
     domain_ig = compute_IG(cm_domain, domain_dist)
     shards_per_lang = Counter(lang for _, lang, _ in shard_items)
-    need = np.array([min(2, shards_per_lang[lang]) for lang in langs])
+    need = np.array([min(MIN_DOMAINS, shards_per_lang[lang]) for lang in langs])
     present = domcount >= need[None, :]
     LDidx = select_LD_features(ld_weights(cm_lang, lang_dist, domain_ig),
                                args.feats_per_lang, present)

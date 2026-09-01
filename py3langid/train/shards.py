@@ -142,7 +142,7 @@ def _select_counts(counts, feat_index):
 def _zero_matrices(nf, nl, nd):
     return (np.zeros((nf, nl), dtype=COUNT_DTYPE),
             np.zeros((nf, nd), dtype=COUNT_DTYPE),
-            np.zeros((nf, nl), dtype=np.int8))
+            np.zeros((nf, nl), dtype=COUNT_DTYPE))
 
 
 def _matrices_chunk(chunk):

@@ -2,6 +2,7 @@
 
 import itertools
 import re
+import shutil
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -11,6 +12,7 @@ from .common import (
     ALT_CLASS,
     CLASS_SCRIPT,
     MIN_DOC,
+    MIN_DOMAINS,
     SPLIT_SCRIPT,
     script_filter,
     walk_corpus,
@@ -22,7 +24,6 @@ GLOTCC_REPO = "cis-lmu/GlotCC-V1"
 GLOT500_REPO = "cis-lmu/Glot500"
 UDHR_CSV = Path("raw_downloads/udhr/udhr-lid.csv")
 TOPUP_MIN_DOCS = 600
-TOPUP_MIN_DOMAINS = 2
 GLOT_SCRIPT = {**CLASS_SCRIPT, "crh": "Latn", "gom": "Deva"}
 GLOT_ISO3 = {"uz": "uzn"}
 
@@ -60,9 +61,15 @@ def _write_topup(out_dir, rows, max_docs, cls, extra_dir=None):
     else:
         n = write_docs(out_dir, docs, max_docs)
     if extra_dir is not None:
-        extra_dir.mkdir(parents=True, exist_ok=True)
+        # extra_dir is the resume marker: write to a tmp dir and rename on
+        # success so a mid-stream failure never marks the class as done
+        tmp = extra_dir.with_name(extra_dir.name + ".tmp")
+        if tmp.is_dir():
+            shutil.rmtree(tmp)
+        tmp.mkdir(parents=True)
         for i, d in enumerate(docs):
-            (extra_dir / f"doc{i:04d}.txt").write_bytes(d)
+            (tmp / f"doc{i:04d}.txt").write_bytes(d)
+        tmp.rename(extra_dir)
     return n
 
 
@@ -142,11 +149,11 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
             classes.append(SPLIT_SCRIPT[lang].alt)
 
     def needy():
-        """Classes below TOPUP_MIN_DOCS or TOPUP_MIN_DOMAINS."""
+        """Classes below TOPUP_MIN_DOCS or MIN_DOMAINS."""
         counts = class_counts(out_root)
         return [c for c in classes
                 if sum(counts[c].values()) < TOPUP_MIN_DOCS
-                or len(counts[c]) < TOPUP_MIN_DOMAINS]
+                or len(counts[c]) < MIN_DOMAINS]
 
     extra_root = out_root.with_name(out_root.name + "_extra")
     thin = needy()

@@ -72,10 +72,16 @@ def test_featureless_input(identifier, norm_identifier):
     assert raw[1] == RAW_FLOOR
     assert math.isfinite(raw[1])
     assert raw[1] < identifier.classify('This is an English sentence.')[1]
-    # the flat score makes every class column equally likely under norm_probs
+    # the flat score makes every class column equally likely under norm_probs;
+    # merging leaves an aliased label (sr, uz) with two columns' worth
     label, prob = norm_identifier.classify('hi')
-    assert prob == pytest.approx(1 / len(identifier.nb_classes), rel=1e-6)
-    assert label == raw[0]
+    per_col = 1 / len(identifier.nb_classes)
+    probs = [p for _, p in norm_identifier.rank('hi')]
+    assert min(probs) == pytest.approx(per_col, rel=1e-6)
+    assert max(probs) == pytest.approx(2 * per_col, rel=1e-6)
+    assert sum(probs) == pytest.approx(1.0, rel=1e-6)
+    assert prob == pytest.approx(max(probs), rel=1e-6)
+    assert label in ('sr', 'uz')
 
 
 def test_unique_labels(identifier):
@@ -182,9 +188,21 @@ def test_empty_and_short():
 
 
 def test_norm_probs_empty(norm_identifier):
-    '''norm_probs=True on empty input returns uniform distribution'''
-    _, prob = norm_identifier.classify('')
-    assert abs(prob - 1.0 / len(norm_identifier.nb_classes)) < 1e-6
+    '''norm_probs=True on empty input returns a flat per-column distribution'''
+    probs = [p for _, p in norm_identifier.rank('')]
+    per_col = 1.0 / len(norm_identifier.nb_classes)
+    assert abs(min(probs) - per_col) < 1e-6
+    assert abs(max(probs) - 2 * per_col) < 1e-6  # aliased labels merge two columns
+    assert abs(sum(probs) - 1.0) < 1e-6
+
+
+def test_classify_matches_rank(norm_identifier):
+    """aliased columns merge the same way in both APIs (regression)"""
+    for text in ('Prema Jungovoj teoriji, m', 'Serbia II Регионална лига',
+                 'Toshkent shahri markazida', 'This is an English sentence.'):
+        lang, conf = norm_identifier.classify(text)
+        top_lang, top_conf = norm_identifier.rank(text)[0]
+        assert (lang, conf) == (top_lang, pytest.approx(top_conf, rel=1e-6))
 
 
 def test_rank_sorted(identifier):
@@ -296,6 +314,6 @@ def test_score_log1p(identifier):
     counts = np.fromiter(fc.values(), dtype=np.float32, count=len(fc))
     expected = np.log1p(counts) @ np.asarray(identifier.nb_ptc, dtype=np.float32)[idx] \
         + identifier.nb_pc
-    # norm_probs is off, so _decide returns the raw NB scores, per label
-    assert np.allclose(identifier._decide(text), expected,
+    # _raw_score is per column, before aliased columns are merged
+    assert np.allclose(identifier._raw_score(identifier._encode(text)), expected,
                        rtol=1e-4)

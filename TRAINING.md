@@ -6,8 +6,16 @@ gain), and Multinomial Naive Bayes over byte n-grams. Training is
 deterministic — the same corpus and settings reproduce the model byte for
 byte. Timings below are from an 11-core, 36 GB laptop.
 
-Training requires only `numpy` (already a dependency of py3langid). Data
-gathering additionally needs `huggingface_hub` and `datasets` for the
+The `py3langid.train` package ships in the repository, not in the PyPI
+wheel, so run the commands below from a clone:
+
+```bash
+git clone https://github.com/adbar/py3langid.git
+cd py3langid
+```
+
+Training itself requires only `numpy` (already a dependency of py3langid).
+Data gathering additionally needs `huggingface_hub` and `datasets` for the
 top-up sources: `pip install huggingface_hub datasets`.
 
 ## Corpus

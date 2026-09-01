@@ -2,7 +2,6 @@
 
 import argparse
 import bz2
-import io
 import json
 import lzma
 import re
@@ -14,8 +13,9 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from ..langid import MODEL_DIR, MODEL_FILE
 from ..modelio import load_model
-from .common import DOC_CAP, MIN_DOC, SPLIT_SCRIPT, route_script
+from .common import DOC_CAP, MIN_DOC, SPLIT_SCRIPT, chunks, route_script
 from .sources import CC100_CODE, ISO3, LEIPZIG_NAME, WIKI_CODE
 
 TATOEBA_URL = "https://downloads.tatoeba.org/exports/sentences.tar.bz2"
@@ -89,8 +89,7 @@ class _TeeReader:
 
 
 def model_langs():
-    path = Path(__file__).parent.parent / "data" / "model.npz.xz"
-    return list(load_model(path)[2])
+    return list(dict.fromkeys(load_model(MODEL_DIR / MODEL_FILE)[2]))  # alias columns collapse
 
 
 class DocWriter:
@@ -100,6 +99,7 @@ class DocWriter:
         self.out_dir = out_dir
         self.lang = out_dir.name
         self.max_docs = max_docs
+        self.spec = SPLIT_SCRIPT.get(self.lang)
         self.counts = defaultdict(int)
 
     def write(self, doc):
@@ -111,9 +111,9 @@ class DocWriter:
 
     @property
     def done(self):
-        spec = SPLIT_SCRIPT.get(self.lang)
-        if spec:
-            return min(self.counts[self.lang], self.counts[spec.alt]) >= self.max_docs
+        if self.spec:
+            return min(self.counts[self.lang],
+                       self.counts[self.spec.alt]) >= self.max_docs
         return self.counts[self.lang] >= self.max_docs
 
     @property
@@ -188,6 +188,8 @@ def gather_wiki(out_root, lang, max_docs, date):
                     doc = text.encode("utf-8").strip()
                     if len(doc) >= MIN_DOC:
                         docs.append(doc)
+        if isinstance(resp, _TeeReader) and len(docs) < max_docs:
+            resp.path = cache.with_name(f"{stem}{len(docs)}")  # truncated stream
     return write_docs(out_root / "wiki" / lang, docs, max_docs)
 
 
@@ -233,11 +235,10 @@ def gather_leipzig(out_root, lang, max_docs, per_doc):
     name = LEIPZIG_NAME.get(lang)
     if not name:
         return 0
-    with fetch_cached(LEIPZIG_URL.format(name=name),
-                      RAW_CACHE / "leipzig" / f"{name}.tar.gz") as resp:
-        data = resp.read()
     sentences = []
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+    with fetch_cached(LEIPZIG_URL.format(name=name),
+                      RAW_CACHE / "leipzig" / f"{name}.tar.gz") as resp, \
+         tarfile.open(fileobj=resp, mode="r|gz") as tar:
         for member in tar:
             if not member.name.endswith("-sentences.txt"):
                 continue
@@ -245,20 +246,27 @@ def gather_leipzig(out_root, lang, max_docs, per_doc):
                 parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("\t", 1)
                 if len(parts) == 2:
                     sentences.append(parts[1])
-    docs = ("\n".join(sentences[i:i + per_doc]).encode("utf-8")
-            for i in range(0, len(sentences), per_doc))
+    docs = ("\n".join(c).encode("utf-8") for c in chunks(sentences, per_doc))
     return write_docs(out_root / "leipzig" / lang, docs, max_docs)
 
 
 def latest_cirrus_date():
     html = fetch(CIRRUS_INDEX).read().decode()
     dates = sorted(set(re.findall(r'href="(\d{8})/"', html)))
+    if not dates:
+        raise RuntimeError(f"no dumps listed at {CIRRUS_INDEX}; pass --wiki-date")
     return dates[-2] if len(dates) > 1 else dates[-1]
+
+
+def _doc_count(domain_dir, lang):
+    # only the primary dir gates completion: minority-script dirs may never
+    # fill from mono-script sources (topup covers them)
+    return sum(1 for _ in (domain_dir / lang).glob("*.txt"))
 
 
 def per_lang_domain(name, func, langs, jobs, out_root, max_docs):
     todo = [lang for lang in langs
-            if sum(1 for _ in (out_root / name / lang).glob("*.txt")) < max_docs]
+            if _doc_count(out_root / name, lang) < max_docs]
     if len(todo) < len(langs):
         print(f"{name}: {len(langs) - len(todo)} langs already complete")
     counts = {}

@@ -1,4 +1,6 @@
 """Offline unit tests for gather_data (network downloaders are tested by use)."""
+from pathlib import Path
+
 import pytest
 
 from py3langid.train.common import DOC_CAP, MIN_DOC
@@ -121,11 +123,13 @@ def test_dedup(tmp_path):
     (other / "doc0000.txt").write_bytes(line)  # same line, different lang: kept
     (zxx / "doc0000.txt").write_bytes(line + b"\n" + line)  # zxx untouched
 
-    removed, touched = dedup(tmp_path)
-    assert (removed, touched) == (1, 1)
+    removed, touched, dropped = dedup(tmp_path)
+    # d1 falls under MIN_DOC once the duplicate line goes, so it is dropped
+    assert (removed, touched, dropped) == (1, 0, 1)
     # sorted traversal: cc100 before wiki, so d2 keeps the first occurrence
     assert (d2 / "doc0000.txt").read_bytes().startswith(line)
-    assert line not in (d1 / "doc0000.txt").read_bytes()
+    assert not (d1 / "doc0000.txt").exists()
+    assert (Path(str(tmp_path) + "_dropped") / "wiki" / "aa" / "doc0000.txt").exists()
     assert (other / "doc0000.txt").read_bytes() == line
     assert (zxx / "doc0000.txt").read_bytes().count(line) == 2
-    assert dedup(tmp_path) == (0, 0)  # idempotent
+    assert dedup(tmp_path) == (0, 0, 0)  # idempotent

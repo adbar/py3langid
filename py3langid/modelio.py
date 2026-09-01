@@ -23,9 +23,7 @@ def _canonical_rows(rows, row_index):
 
 def expand_nextmove(rows, row_index):
     """Undo row sharing: one 256-entry row per state."""
-    table = np.asarray(rows).reshape(-1, 256)[np.asarray(row_index)]
-    return array(rows.typecode if isinstance(rows, array) else
-                 {2: "H", 4: "I", 8: "L"}[table.dtype.itemsize], table.ravel())
+    return _to_array(np.asarray(rows).reshape(-1, 256)[np.asarray(row_index)])
 
 
 def save_model(path, model):
@@ -35,7 +33,8 @@ def save_model(path, model):
     dtype = np.uint16 if not nextmove.size or nextmove.max() < 1 << 16 else np.uint32
     rows, row_index = _canonical_rows(nextmove, tk_row)
     out_feat = np.asarray(tk_output, dtype=np.int32)
-    assert len(out_feat) == len(row_index), "one output slot per DFA state"
+    if len(out_feat) != len(row_index):
+        raise ValueError("one output slot per DFA state")
     arrays = {
         "ptc": np.asarray(nb_ptc, dtype=np.float16).reshape(-1, len(nb_pc)),
         "pc": np.asarray(nb_pc, dtype=np.float32),
@@ -50,9 +49,12 @@ def save_model(path, model):
         f.write(lzma.compress(buffer.getvalue(), preset=6))
 
 
+_TYPECODE = {2: "H", 4: "I", 8: "L"}
+
+
 def _to_array(arr):
     """NumPy unsigned int array → stdlib array('H'/'I'/'L')."""
-    out = array({2: "H", 4: "I", 8: "L"}[arr.dtype.itemsize])
+    out = array(_TYPECODE[arr.dtype.itemsize])
     out.frombytes(memoryview(np.ascontiguousarray(arr)).cast("B"))
     return out
 

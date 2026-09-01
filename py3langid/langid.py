@@ -20,6 +20,32 @@ MODEL_DIR = Path(__file__).parent
 RAW_FLOOR = float(np.finfo(np.float32).min)  # finite floor for featureless input
 
 
+def decode_trimmed(data):
+    """Decode UTF-8, trimming ≤3 partial trailing bytes; None if undecodable.
+    Shared train/inference contract (also used by train.common.nfc_bytes)."""
+    for trim in range(4):
+        chunk = data[:len(data) - trim] if trim else data
+        try:
+            return chunk.decode('utf8')
+        except UnicodeDecodeError as e:
+            if e.start < len(data) - 3:  # not fixable by trimming the tail
+                return None
+    return None
+
+
+def visit_counts(nm, rowbase, out, text):
+    """DFA-walk feature counts over bytes; None if none.
+    Shared by inference (_raw_score) and training (train.stages)."""
+    state, indexes = 0, []
+    append = indexes.append
+    for letter in text:
+        state = nm[rowbase[state] + letter]
+        f = out[state]
+        if f >= 0:
+            append(f)
+    return Counter(indexes) if indexes else None
+
+
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
     if model_path:
         identifier = LanguageIdentifier.from_modelpath(model_path, norm_probs=norm_probs)
@@ -53,7 +79,8 @@ def rank(instance):
 
 def _init_worker(model_path, norm_probs, langs):
     global IDENTIFIER
-    IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
+    if IDENTIFIER is None:  # forked workers inherit the parent's identifier
+        IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
 
 
 def _process_file(path, dist=False):
@@ -64,6 +91,7 @@ def _process_file(path, dist=False):
 
 class LanguageIdentifier:
     __slots__ = [
+        '_alias_pairs',
         '_full_model',
         '_norm_probs',
         '_rowbase',
@@ -103,6 +131,17 @@ class LanguageIdentifier:
         self.tk_output = tk_output
         self._norm_probs = norm_probs
         self._full_model = nb_ptc, nb_pc, nb_classes
+        self._set_alias_pairs()
+
+    def _set_alias_pairs(self):
+        """(first, dupe) column pairs for labels appearing more than once."""
+        first, pairs = {}, []
+        for i, c in enumerate(self.nb_classes):
+            if c in first:
+                pairs.append((first[c], i))
+            else:
+                first[c] = i
+        self._alias_pairs = pairs
 
     @property
     def labels(self):
@@ -125,19 +164,14 @@ class LanguageIdentifier:
             self.nb_classes = [nb_classes[i] for i in indices]
             self.nb_ptc = nb_ptc[:, indices]
             self.nb_pc = nb_pc[indices]
+        self._set_alias_pairs()
 
     @staticmethod
     def _encode(text):
         if isinstance(text, bytes):
-            # decode to str for uniform case normalization; trim partial
-            # trailing codepoint (as train.common.nfc_bytes does)
-            for trim in range(4):
-                chunk = text[:len(text) - trim] if trim else text
-                try:
-                    text = chunk.decode('utf8')
-                except UnicodeDecodeError:
-                    continue
-                break
+            decoded = decode_trimmed(text)
+            if decoded is not None:
+                text = decoded
         if isinstance(text, str):
             if text.isupper():
                 text = text.lower()
@@ -153,17 +187,10 @@ class LanguageIdentifier:
 
     def _raw_score(self, text):
         """Raw NB scores via DFA walk over encoded bytes."""
-        state, indexes = 0, []
-        nm, rowbase, out = self.tk_nextmove, self._rowbase, self.tk_output
-        append = indexes.append
-        for letter in text:
-            state = nm[rowbase[state] + letter]
-            f = out[state]
-            if f >= 0:
-                append(f)
-
-        if indexes:
-            return self._sparse_score(Counter(indexes), self.nb_ptc)
+        visits = visit_counts(self.tk_nextmove, self._rowbase, self.tk_output,
+                              text)
+        if visits:
+            return self._sparse_score(visits, self.nb_ptc)
 
         # no features: 0.0 under norm_probs (uniform → abstain), RAW_FLOOR otherwise
         fill = 0.0 if self._norm_probs else RAW_FLOOR
@@ -178,6 +205,15 @@ class LanguageIdentifier:
             scores *= 1.0 / math.sqrt(len(text) or 1)
             np.exp(scores - scores.max(), out=scores)
             scores /= scores.sum()
+        # aliased columns (srl->sr): fold the dupe into the first occurrence and
+        # mask it, so argmax and rank agree on one score per label
+        for i, j in self._alias_pairs:
+            if self._norm_probs:
+                scores[i] += scores[j]
+                scores[j] = 0.0
+            else:
+                scores[i] = max(scores[i], scores[j])
+                scores[j] = RAW_FLOOR
         return scores
 
     def classify(self, text):
@@ -191,12 +227,10 @@ class LanguageIdentifier:
 
     def rank(self, text):
         """All languages by likelihood, best first, one entry per label."""
-        ranked = sorted(zip(self.nb_classes, self._decide(text).tolist()),
-                        key=itemgetter(1), reverse=True)
-        best = {}
-        for lang, prob in ranked:
-            best.setdefault(lang, prob)  # aliased columns: keep the best one
-        return list(best.items())
+        merged = {}
+        for lang, score in zip(self.nb_classes, self._decide(text).tolist()):
+            merged.setdefault(lang, score)  # first column holds the merged score
+        return sorted(merged.items(), key=itemgetter(1), reverse=True)
 
 
 def main():
@@ -266,25 +300,29 @@ def main():
 
     elif options.batch:
         import csv
+        import multiprocessing as mp
         from functools import partial
-        from multiprocessing import Pool, cpu_count
 
-        paths = [p for p in (line.strip() for line in sys.stdin)
-                 if p and Path(p).is_file()]
+        def paths():
+            for line in sys.stdin:
+                p = line.strip()
+                if p and Path(p).is_file():
+                    yield p
 
         writer = csv.writer(sys.stdout, lineterminator='\n')
-        with Pool(processes=max(1, min(cpu_count(), len(paths))),
-                  initializer=_init_worker,
-                  initargs=(options.model, options.normalize, langs)) as pool:
+        ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
+        with ctx.Pool(processes=mp.cpu_count(),
+                      initializer=_init_worker,
+                      initargs=(options.model, options.normalize, langs)) as pool:
             if options.dist:
                 header = IDENTIFIER.labels
                 writer.writerow(['path', 'language'] + header)
-                for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), paths):
+                for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), paths()):
                     scores = dict(ranking)
                     row = [path, ranking[0][0]] + [scores[c] for c in header]
                     writer.writerow(row)
             else:
-                for path, (lang, conf) in pool.imap_unordered(_process_file, paths):
+                for path, (lang, conf) in pool.imap_unordered(_process_file, paths()):
                     writer.writerow((path, lang, conf))
     else:
         if sys.stdin.isatty():

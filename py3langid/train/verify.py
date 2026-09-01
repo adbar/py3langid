@@ -5,7 +5,16 @@ from collections import Counter
 from itertools import combinations
 from pathlib import Path
 
-from .common import DOC_CAP, LABEL_ALIAS, MIN_DOC, MapPool, read_doc, walk_corpus
+from ..langid import LanguageIdentifier
+from .common import (
+    DOC_CAP,
+    LABEL_ALIAS,
+    MIN_DOC,
+    MapPool,
+    drop,
+    read_doc,
+    walk_corpus,
+)
 
 CONFUSABLE_GROUPS = [
     {"bs", "hr", "sr"}, {"sr", "mk"},
@@ -36,7 +45,6 @@ _ident = None
 
 def _init(model_path):
     global _ident
-    from py3langid.langid import LanguageIdentifier
     _ident = LanguageIdentifier.from_modelpath(model_path)
 
 
@@ -84,15 +92,6 @@ def corpus_items(corpus, verifier_langs=None):
     return items
 
 
-def drop(corpus, paths):
-    dropped_root = Path(str(corpus).rstrip("/") + "_dropped")
-    for p in paths:
-        src = Path(p)
-        dst = dropped_root / src.relative_to(corpus)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        src.rename(dst)
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, help="verifier model file (npz.xz)")
@@ -102,7 +101,6 @@ def main(argv=None):
     parser.add_argument("corpus", metavar="CORPUS_DIR")
     args = parser.parse_args(argv)
 
-    from py3langid.langid import LanguageIdentifier
     verifier_langs = set(LanguageIdentifier.from_modelpath(args.model).nb_classes)
     items = corpus_items(args.corpus, verifier_langs)
     if args.paragraphs:
