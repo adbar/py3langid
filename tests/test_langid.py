@@ -1,24 +1,44 @@
 
 import csv
+import json
+import lzma
 import math
+import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import py3langid as langid
-from py3langid.langid import MODEL_FILE, RAW_FLOOR, LanguageIdentifier
+from py3langid.langid import (MODEL_DIR, MODEL_FILE, RAW_FLOOR,
+                              LanguageIdentifier, _load_identifier)
 
 
-@pytest.fixture
-def identifier():
+# a model load costs ~0.25s: share one per variant, undoing set_languages,
+# the only mutable state, between tests
+@pytest.fixture(scope='module')
+def _shared_identifier():
     return LanguageIdentifier.from_model_file(MODEL_FILE)
 
 
-@pytest.fixture
-def norm_identifier():
+@pytest.fixture(scope='module')
+def _shared_norm_identifier():
     return LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
+
+
+@pytest.fixture
+def identifier(_shared_identifier):
+    yield _shared_identifier
+    _shared_identifier.set_languages(None)
+
+
+@pytest.fixture
+def norm_identifier(_shared_norm_identifier):
+    yield _shared_norm_identifier
+    _shared_norm_identifier.set_languages(None)
 
 
 @pytest.mark.parametrize('text,expected', [
@@ -97,12 +117,14 @@ def test_rank_agrees_with_classify(identifier):
 
 
 def test_language_restriction(identifier):
-    """a language restriction narrows the class set and still classifies"""
+    """a restriction narrows the class set, still classifies, and reverts"""
+    full = len(identifier.nb_classes)
     identifier.set_languages(['en', 'de'])
     assert set(identifier.labels) == {'en', 'de'}
+    assert len(identifier.nb_classes) == 2
     assert identifier.classify('This should be enough text.')[0] == 'en'
     identifier.set_languages(None)
-    assert len(identifier.labels) > 2
+    assert len(identifier.nb_classes) == full
 
 
 def test_unnormalized(identifier):
@@ -132,9 +154,21 @@ def test_bytes_str_parity():
     assert langid.rank(text) == langid.rank(text.encode('utf8'))
 
 
+def test_truncated_bytes_reach_the_str_branch():
+    '''bytes cut mid-codepoint still get lowered and NFC-normalized'''
+    full = 'ЭТО РУССКИЙ ТЕКСТ ДЛЯ ТЕСТА ОПРЕДЕЛЕНИЯ ЯЗЫКА'.encode()
+    cut = full[:-1]  # drops one byte of a 2-byte codepoint
+    with pytest.raises(UnicodeDecodeError):
+        cut.decode('utf8')
+    # the partial tail is dropped, so all-caps lowering still applies
+    assert langid.classify(cut)[0] == 'ru'
+    assert LanguageIdentifier._encode(cut) == full[:-2].decode().lower().encode()
+    # genuinely undecodable bytes are still passed through untouched
+    assert LanguageIdentifier._encode(b'\xff\xfe\xff\xfe') == b'\xff\xfe\xff\xfe'
+
+
 def test_empty_and_short():
     '''Feature-less input scores a finite floor, short input does not crash'''
-    import json
     for empty in ('', b''):
         lang, score = langid.classify(empty)
         assert isinstance(lang, str)
@@ -171,15 +205,6 @@ def test_set_languages_error(identifier):
         identifier.set_languages(['xx_invalid'])
 
 
-def test_set_languages_reset(identifier):
-    '''set_languages(None) restores the full model'''
-    full = len(identifier.nb_classes)
-    identifier.set_languages(['en', 'fr'])
-    assert len(identifier.nb_classes) == 2
-    identifier.set_languages(None)
-    assert len(identifier.nb_classes) == full
-
-
 def test_redirection():
     '''Test if STDIN redirection works'''
     thisdir = Path(__file__).parent
@@ -204,14 +229,17 @@ def test_cli_batch(tmp_path):
 
 
 def test_cli_external_model(tmp_path):
-    '''-m loads an external model written by save_model'''
-    from py3langid.langid import MODEL_DIR
-    from py3langid.modelio import load_model, save_model
+    '''-m loads a model from a path outside the package'''
     model_path = tmp_path / 'external.npz.xz'
-    save_model(model_path, load_model(MODEL_DIR / MODEL_FILE))
+    shutil.copy(MODEL_DIR / MODEL_FILE, model_path)
     result = subprocess.check_output(['langid', '-n', '-m', str(model_path)],
                                      input=b'This should be enough text.')
     assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
+    # the path is honored, not silently replaced by the bundled model
+    missing = subprocess.run(['langid', '-n', '-m', str(tmp_path / 'nope.npz.xz')],
+                             input=b'This should be enough text.',
+                             capture_output=True, check=False)
+    assert missing.returncode != 0
 
 
 def test_cli():
@@ -222,42 +250,40 @@ def test_cli():
     assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
 
 
-def test_min_confidence(norm_identifier):
+def _variant(ident, **kwargs):
+    """another identifier over the same arrays, no second model load"""
+    return LanguageIdentifier(ident.nb_ptc, ident.nb_pc, ident.nb_classes,
+                              ident.tk_nextmove, ident.tk_output,
+                              tk_row=ident.tk_row, **kwargs)
+
+
+def test_min_confidence(identifier):
     """abstention: low calibrated confidence returns 'und'"""
-    ident = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True,
-                                               min_confidence=0.5)
+    ident = _variant(identifier, norm_probs=True, min_confidence=0.5)
     lang, conf = ident.classify('This should be enough text.')
     assert lang == 'en' and conf >= 0.5
     lang, conf = ident.classify('Hi')  # too short to attribute
     assert lang == 'und' and conf < 0.5
     with pytest.raises(ValueError):
-        LanguageIdentifier.from_model_file(MODEL_FILE, min_confidence=0.5)
+        _variant(identifier, min_confidence=0.5)
 
 
-def test_from_modelpath(identifier):
+def test_from_modelpath():
     """from_modelpath loads the npz+LZMA layout from an arbitrary path"""
-    from py3langid.langid import MODEL_DIR
     ident = LanguageIdentifier.from_modelpath(MODEL_DIR / MODEL_FILE)
     assert ident.classify('This should be enough text.')[0] == 'en'
 
 
-def test_external_model_failure_falls_back(tmp_path, caplog):
-    """an unusable -m path warns and falls back to the bundled model"""
-    import logging
-
-    from py3langid.langid import _load_identifier
+def test_external_model_failure_raises(tmp_path):
+    """an unusable -m path raises instead of silently falling back"""
     bad = tmp_path / 'not-a-model.npz.xz'
     bad.write_bytes(b'definitely not an xz stream')
-    with caplog.at_level(logging.WARNING):
-        ident = _load_identifier(str(bad))
-    assert 'Failed to load' in caplog.text
-    assert ident.classify('This should be enough text.')[0] == 'en'
+    with pytest.raises((OSError, lzma.LZMAError, ValueError)):
+        _load_identifier(str(bad))
 
 
 def test_score_log1p(identifier):
     """scoring applies sublinear TF (log1p) plus class priors"""
-    import numpy as np
-
     text = b'This should be enough text.'
     state, idxs = 0, []
     for letter in text:
@@ -265,7 +291,6 @@ def test_score_log1p(identifier):
         feat = identifier.tk_output[state]  # one longest match per position
         if feat >= 0:
             idxs.append(feat)
-    from collections import Counter
     fc = Counter(idxs)
     idx = np.fromiter(fc.keys(), dtype=np.intp, count=len(fc))
     counts = np.fromiter(fc.values(), dtype=np.float32, count=len(fc))

@@ -19,7 +19,7 @@ from collections import Counter
 from itertools import combinations
 from pathlib import Path
 
-from .common import LABEL_ALIAS, MapPool, read_doc, walk_corpus
+from .common import DOC_CAP, LABEL_ALIAS, MIN_DOC, MapPool, read_doc, walk_corpus
 
 # Every pair within a group is protected; overlapping groups express
 # near-cliques (kk/ky are NOT protected against each other, only vs tt/ba).
@@ -59,8 +59,6 @@ CONFUSABLE_GROUPS = [
 CONFUSABLE = {frozenset(p) for g in CONFUSABLE_GROUPS
               for p in combinations(sorted(g), 2)}
 MIN_PARA = 150
-MIN_DOC = 500
-MAX_CLASSIFY = 3000
 
 _ident = None
 
@@ -79,7 +77,7 @@ def is_foreign(label, pred):
 
 def _check_doc(arg):
     lang, path = arg
-    pred, _ = _ident.classify(read_doc(path, MAX_CLASSIFY))
+    pred, _ = _ident.classify(read_doc(path, DOC_CAP))
     return path if is_foreign(lang, pred) else None
 
 

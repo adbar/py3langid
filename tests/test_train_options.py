@@ -1,11 +1,13 @@
-"""Unit tests for the --doc_cap training option and ngram_select's order set.
+"""Unit tests for ngram_select's order set and the DOC_CAP tokenization cap.
 
-The n-gram orders and the DF pool size are constants, not flags: tests that
-need a small term set patch MAX_NGRAM_ORDER or pass `orders` explicitly.
+The n-gram orders, the DF pool size and the doc cap are constants, not
+flags: tests that need a small term set patch MAX_NGRAM_ORDER or pass
+`orders` explicitly, and tests that need a different cap patch DOC_CAP.
 """
 import marshal
 
-from py3langid.train.common import set_shared
+import pytest
+
 from py3langid.train.shards import _build_shard, _group_key
 from py3langid.train.stages import ngram_select
 
@@ -34,30 +36,28 @@ def test_ngram_select_default_orders():
     assert ngram_select({b"a": 9, b"ab": 1}) == [b"ab"]
 
 
-def _shard_counts(tmp_path, doc_cap, monkeypatch):
-    """@returns the shard's docfreq dict, tokenized at order 2 only."""
-    monkeypatch.setattr("py3langid.train.shards.MAX_NGRAM_ORDER", 2)
+@pytest.mark.parametrize("doc_cap,expected", [
+    (3, [b"ab", b"bc"]),  # cap 3 sees only b"abc": b"cd" on is never tokenized
+    (0, [b"ab", b"bc", b"cd", b"de", b"ef"]),  # 0 = no cap
+])
+def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap,
+                           expected):
+    """DOC_CAP bounds how much of a document reaches the tokenizer"""
+    monkeypatch.setattr("py3langid.train.shards.DOC_CAP", doc_cap)
     doc = tmp_path / "doc0000.txt"
     doc.write_bytes(b"abcdef")
     shard = tmp_path / "shard"
-    set_shared(doc_cap)
-    _build_shard((str(shard), _group_key([str(doc)], doc_cap), [str(doc)]))
+    _build_shard((str(shard), _group_key([str(doc)]), [str(doc)]))
     with open(shard, "rb") as f:
-        marshal.load(f)
-        return marshal.load(f)
-
-
-def test_doc_cap_truncates(tmp_path, monkeypatch):
-    # cap 3 sees only b"abc", so b"cd" onwards is never tokenized
-    assert _shard_counts(tmp_path, 3, monkeypatch) == {b"ab": 1, b"bc": 1}
-
-
-def test_doc_cap_zero_reads_all(tmp_path, monkeypatch):
-    assert set(_shard_counts(tmp_path, 0, monkeypatch)) == {
-        b"ab", b"bc", b"cd", b"de", b"ef"}
+        marshal.load(f)  # the cache key
+        docfreq = marshal.load(f)
+    # the bigrams of b"abcdef" are distinct: one doc each
+    assert docfreq == dict.fromkeys(expected, 1)
 
 
 def test_doc_cap_is_part_of_the_cache_key(tmp_path, monkeypatch):
-    """two caps must not read each other's shards"""
-    assert _shard_counts(tmp_path, 3, monkeypatch) != \
-        _shard_counts(tmp_path, 0, monkeypatch)
+    """editing the cap must invalidate cached shards"""
+    monkeypatch.setattr("py3langid.train.shards.DOC_CAP", 3)
+    key3 = _group_key([str(tmp_path)])
+    monkeypatch.setattr("py3langid.train.shards.DOC_CAP", 0)
+    assert _group_key([str(tmp_path)]) != key3

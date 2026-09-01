@@ -1,9 +1,10 @@
 """Offline unit tests for gather_data (network downloaders are tested by use)."""
+import pytest
+
+from py3langid.train.common import DOC_CAP, MIN_DOC
 from py3langid.train.gather_data import (
     CC100_CODE,
     ISO3,
-    MAX_DOC,
-    MIN_DOC,
     WIKI_CODE,
     write_docs,
 )
@@ -12,7 +13,7 @@ from py3langid.train.gather_data import (
 def test_write_docs(tmp_path):
     docs = [
         b"x" * (MIN_DOC - 1),      # stub, skipped
-        b"a" * (MAX_DOC + 5000),   # truncated
+        b"a" * (DOC_CAP + 5000),   # truncated
         b"b" * 600,
         b"c" * 600,
     ]
@@ -20,7 +21,7 @@ def test_write_docs(tmp_path):
     assert n == 2
     files = sorted((tmp_path / "out").iterdir())
     assert [f.name for f in files] == ["doc0000.txt", "doc0001.txt"]
-    assert files[0].stat().st_size == MAX_DOC
+    assert files[0].stat().st_size == DOC_CAP
     assert files[1].read_bytes() == b"b" * 600
 
 
@@ -37,7 +38,7 @@ def test_tatoeba_uses_the_validity_gate(tmp_path, monkeypatch):
     from py3langid.train import gather_data
 
     # two "languages": eng packs 1 long sentence per doc, deu 1 stub per doc
-    rows = [("1", "eng", "L" * (MAX_DOC + 500))] * 3 + [("2", "deu", "tiny")] * 3
+    rows = [("1", "eng", "L" * (DOC_CAP + 500))] * 3 + [("2", "deu", "tiny")] * 3
     csv = "".join("\t".join(r) + "\n" for r in rows).encode()
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:bz2") as tar:
@@ -52,14 +53,17 @@ def test_tatoeba_uses_the_validity_gate(tmp_path, monkeypatch):
                                         per_doc=1)
     assert counts == {"en": 2}  # de produced only stubs -> nothing written
     for f in (tmp_path / "tatoeba" / "en").iterdir():
-        assert f.stat().st_size == MAX_DOC  # truncated, not written raw
+        assert f.stat().st_size == DOC_CAP  # truncated, not written raw
     assert not (tmp_path / "tatoeba" / "de").exists()
 
 
-def test_code_mappings():
-    # keys are ISO 639-1 (2-char) or 639-3 (3-char) for langs without a 639-1 code
-    for mapping in (ISO3, CC100_CODE, WIKI_CODE):
-        assert all(2 <= len(k) <= 3 for k in mapping)
+@pytest.mark.parametrize("mapping", [ISO3, CC100_CODE, WIKI_CODE])
+def test_mapping_keys_are_iso_639(mapping):
+    """keys are ISO 639-1, or 639-3 for langs without a 639-1 code"""
+    assert all(2 <= len(k) <= 3 for k in mapping)
+
+
+def test_iso3_values_are_distinct_639_3():
     assert all(len(v) == 3 for v in ISO3.values())
     assert len(set(ISO3.values())) == len(ISO3)
 

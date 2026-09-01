@@ -11,10 +11,9 @@ import numpy as np
 
 from .common import (
     DF_TOKENS,
+    DOC_CAP,
     SELECT_ORDERS,
-    TOKENIZE_ORDER,
     MapPool,
-    is_cjk_bigram,
     job_chunks,
     read_doc,
     set_shared,
@@ -46,15 +45,15 @@ def ngram_select(doc_count, tokens_per_order=DF_TOKENS, orders=SELECT_ORDERS):
     Top tokens_per_order terms by document frequency at each order in
     `orders`; ties break on the term itself for determinism.
 
-    Order TOKENIZE_ORDER is restricted to CJK codepoint bigrams. Which
-    orders are admissible, and that rule, are decided here and only here --
-    shards may carry other terms, so order filtering belongs at selection.
+    Which orders are admissible is decided here. That TOKENIZE_ORDER holds
+    only CJK bigrams is doc_ngrams' invariant, enforced there alone: the
+    orders are in the shard cache key, so a shard written under other
+    rules is never read.
     """
     buckets = defaultdict(list)
     for term, count in doc_count.items():
         order = len(term)
-        if order in orders and (
-                order != TOKENIZE_ORDER or is_cjk_bigram(term)):
+        if order in orders:
             buckets[order].append((count, term))
     features = set()
     for bucket in buckets.values():
@@ -111,40 +110,44 @@ def compute_IG(cm_pos, dist):
                             + (n - t) * entropy(dist - present)) / n
 
 
-def compute_IG_binarized(cm_pos, dist, chunk=8192):
-    """
-    Information gain per term, binarized with respect to each event
-    (event j against the rest), chunked over terms to bound temporaries.
+def ld_weights(cm_lang, lang_dist, domain_ig):
+    """LD weight per language: the term's IG for that language against the
+    rest, minus its domain IG.
 
-    @param cm_pos (num_term, num_event) counts of docs containing each term
-    @param dist per-event document totals
-    @returns (num_term, num_event) IG values
+    One column at a time, because select_LD_features only ever ranks a
+    column against itself: the (num_term, num_lang) matrix is never built,
+    so no temporary needs chunking to stay bounded.
+
+    @param cm_lang (num_term, num_lang) counts of docs containing each term
+    @param lang_dist per-language document totals
+    @param domain_ig (num_term,) subtracted from every column
+    @yields (num_term,) LD weights, one array per language column
     """
-    dist = np.asarray(dist, dtype=float)
+    dist = np.asarray(lang_dist, dtype=float)
     n = dist.sum()
     prior = _binary_entropy(dist, n - dist)
-    ig = np.empty(cm_pos.shape, dtype=float)
-    for lo in range(0, len(cm_pos), chunk):
-        present = np.asarray(cm_pos[lo:lo + chunk], dtype=float)
-        t = present.sum(1)[:, None]
-        absent = dist - present
-        ig[lo:lo + chunk] = prior - (
-            t * _binary_entropy(present, t - present)
-            + (n - t) * _binary_entropy(absent, (n - t) - absent)) / n
-    return ig
+    t = cm_lang.sum(1, dtype=np.int64).astype(float)  # docs holding the term
+    rest = n - t
+    for j, dist_j in enumerate(dist):
+        pos = np.asarray(cm_lang[:, j], dtype=float)
+        neg = dist_j - pos
+        yield prior[j] - (t * _binary_entropy(pos, t - pos)
+                          + rest * _binary_entropy(neg, rest - neg)) / n \
+            - domain_ig
 
 
-def select_LD_features(ld, feats_per_lang, present):
+def select_LD_features(ld_columns, feats_per_lang, present):
     """
     Top feats_per_lang features per language by LD weight (IG_lang - IG_domain).
-    @param ld (num_term, num_lang) LD weight matrix
+    @param ld_columns one (num_term,) LD weight array per language, in
+        column order -- see ld_weights
     @param present (num_term, num_lang) bool; restrict each language's pick
         to features that occur in it (else the global DF pool starves
         minority-script languages and pads their quota with noise)
     @returns the union set of term row indices over languages
     """
     selected = set()
-    for j, lang_w in enumerate(ld.T):
+    for j, lang_w in enumerate(ld_columns):
         cand = np.flatnonzero(present[:, j])
         selected.update(cand[np.argsort(lang_w[cand])[-feats_per_lang:]].tolist())
     return selected
@@ -186,12 +189,12 @@ def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
 def _feature_counts_chunk(chunk):
     """@param chunk (lang column, path) pairs
     @returns a (n_feats, num_langs) int64 partial"""
-    nm, rowbase, out, n_feats, num_langs, doc_cap = shared()
+    nm, rowbase, out, n_feats, num_langs = shared()
     counts = np.zeros((n_feats, num_langs), dtype=np.int64)
     for col, path in chunk:
         # the runtime's walk (langid._raw_score)
         state, visits = 0, {}
-        for letter in read_doc(path, doc_cap):
+        for letter in read_doc(path, DOC_CAP):
             state = nm[rowbase[state] + letter]
             f = out[state]
             if f >= 0:
@@ -203,7 +206,7 @@ def _feature_counts_chunk(chunk):
 
 
 def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
-                   doc_cap, jobs=None):
+                   jobs=None):
     """Per-(feature, lang) occurrence counts: walk every doc through the DFA
     as the runtime does, crediting the one feature each state emits (the NB
     numerators; shard totals count every match at every position instead).
@@ -214,8 +217,8 @@ def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
     counts = np.zeros((n_feats, len(lang_index)), dtype=np.int64)
     rowbase = [r << 8 for r in tk_row]
     with MapPool(jobs, set_shared,
-                 (tk_nextmove, rowbase, tk_output, n_feats, len(lang_index),
-                  doc_cap)) as f:
+                 (tk_nextmove, rowbase, tk_output, n_feats,
+                  len(lang_index))) as f:
         for partial in f(_feature_counts_chunk, job_chunks(tasks, jobs)):
             counts += partial
     return counts

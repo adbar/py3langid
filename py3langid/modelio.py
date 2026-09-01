@@ -16,7 +16,6 @@ uncompressed npz.
 
 import io
 import lzma
-import os
 import shutil
 import tempfile
 from array import array
@@ -82,14 +81,11 @@ def load_model(path):
     """@returns (nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output);
     tk_nextmove holds the distinct DFA rows and tk_row maps state -> row;
     tk_output = one feature index per state (-1 = none)"""
-    # stream the LZMA out to a temp file so the (uncompressed) npz never
-    # has to be resident, then take one array at a time
-    fd, tmp_path = tempfile.mkstemp(suffix=".npz")
-    # unlink the name at once and keep only the descriptor: nothing is left
-    # behind even if the process is killed outright, as a SIGTERM (batch mode
-    # terminates its pool) never unwinds `finally`
-    os.unlink(tmp_path)
-    with os.fdopen(fd, "w+b") as tmp:
+    # stream the LZMA out to a temp file so the (uncompressed) npz never has to
+    # be resident, then take one array at a time. TemporaryFile leaves nothing
+    # behind even if the process is killed outright (a SIGTERM never unwinds
+    # `finally`) and, unlike dropping an open fd's name, works on Windows
+    with tempfile.TemporaryFile(suffix=".npz") as tmp:
         with lzma.open(path) as src:
             shutil.copyfileobj(src, tmp, length=1 << 20)
         tmp.seek(0)

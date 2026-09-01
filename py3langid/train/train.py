@@ -14,7 +14,6 @@ from ..modelio import save_model
 from .common import (
     CLUSTER_K,
     CLUSTERS,
-    DOC_CAP,
     FEATURES_PER_LANG,
     LABEL_ALIAS,
 )
@@ -23,9 +22,9 @@ from .shards import build_shards, count_matrices, merge_docfreq
 from .stages import (
     cluster_features,
     compute_IG,
-    compute_IG_binarized,
     feature_counts,
     index_corpus,
+    ld_weights,
     ngram_select,
     select_LD_features,
 )
@@ -43,8 +42,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-m","--model", help="save output to MODEL_DIR", metavar="MODEL_DIR")
     parser.add_argument("-j","--jobs", type=int, metavar='N', help="spawn N processes (set to 1 for no parallelization)")
-    parser.add_argument("--doc_cap", type=int, default=DOC_CAP,
-        help="truncate each doc to N bytes at tokenization (0 = no cap)")
     parser.add_argument("--feats_per_lang", type=int, metavar='N', help="select top N features for each language", default=FEATURES_PER_LANG)
     parser.add_argument("--shards", metavar="SHARD_DIR", help="n-gram count shard cache (default: CORPUS_DIR.shards)")
     parser.add_argument("corpus", help="read corpus from CORPUS_DIR", metavar="CORPUS_DIR")
@@ -82,7 +79,7 @@ def main(argv=None):
     # Tokenize the corpus into per-(domain, lang) n-gram count shards.
     # Cached shards are reused; only changed directories are re-tokenized.
     shard_dir = args.shards or os.path.normpath(args.corpus) + '.shards'
-    shard_items = build_shards(items, shard_dir, args.jobs, args.doc_cap)
+    shard_items = build_shards(items, shard_dir, args.jobs)
 
     doc_count = merge_docfreq(shard_items, args.jobs)
     print(f"tallied document frequency of {len(doc_count)} terms")
@@ -111,13 +108,13 @@ def main(argv=None):
     # candidates restricted to terms seen in >=2 of the language's domains
     # (or, for a single-domain language, in its one domain)
     print("computing information gain")
-    ld = (compute_IG_binarized(cm_lang, lang_dist)
-          - compute_IG(cm_domain, domain_dist)[:, None])
+    domain_ig = compute_IG(cm_domain, domain_dist)
     # one shard per (domain, lang) dir, so a lang's domains are a shard tally
     shards_per_lang = Counter(lang for _, lang, _ in shard_items)
     need = np.array([min(2, shards_per_lang[lang]) for lang in langs])
     present = domcount >= need[None, :]
-    LDidx = select_LD_features(ld, args.feats_per_lang, present)
+    LDidx = select_LD_features(ld_weights(cm_lang, lang_dist, domain_ig),
+                               args.feats_per_lang, present)
     extra = cluster_features(cm_lang, lang_dist, lang_index, features, LDidx,
                              CLUSTERS, CLUSTER_K)
     print(f"added {len(extra)} cluster features")
@@ -147,7 +144,7 @@ def main(argv=None):
     # match per byte position, rather than every n-gram occurrence
     print("counting longest-match feature occurrences")
     prod = feature_counts(items, tk_nextmove, tk_row, tk_output, len(LDfeats),
-                          lang_index, args.doc_cap, args.jobs)
+                          lang_index, args.jobs)
     # log P(t|C), add-one smoothed over the feature vocabulary
     nb_ptc = np.log(1.0 + prod) - np.log(len(LDfeats) + prod.sum(0))
 

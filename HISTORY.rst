@@ -2,6 +2,25 @@
 History
 =======
 
+Unreleased
+----------
+
+* New model covering 139 languages (was 97), retrained from a revamped,
+  reproducible training pipeline (``py3langid.train``)
+* Breaking: legacy pickled model loading removed, ``npz``+LZMA is the only
+  model format; older external models are rejected
+* Breaking: WSGI service moved from ``py3langid.langid:application`` to
+  ``py3langid.server:application``
+* Breaking: an unusable ``-m`` model path now raises instead of silently
+  falling back to the bundled model
+* Breaking: batch ``--dist`` CSV output gained a ``language`` column
+* New ``min_confidence`` option: ``classify()`` returns ``("und", conf)``
+  below the threshold (requires ``norm_probs=True``)
+* Confidence normalization calibrated across input lengths
+* Input normalization matches training (NFC, byte input truncated
+  mid-codepoint handled)
+* Faster and simplified inference
+
 0.3.0
 -----
 

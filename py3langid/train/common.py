@@ -24,7 +24,12 @@ DF_TOKENS = 60000 # candidate pool: top tokens by document frequency, per order
 # every existing language's budget (~20 new languages would undo this raise)
 # and would starve exactly the script-novel additions, which share nothing.
 FEATURES_PER_LANG = 1050
-DOC_CAP = 3000 # bytes per doc at tokenization; equalizes doc byte weight
+# The doc byte budget, one number for every stage that touches a doc:
+# gathering truncates to it, tokenization and the verifier read it, zxx
+# generates it. Equalizes doc byte weight across domains; storing more than
+# the trainer reads would be dead weight on disk.
+DOC_CAP = 3000
+MIN_DOC = 500  # shorter is a stub, not a document
 
 # Confusable clusters get CLUSTER_K extra features each, chosen by
 # cluster-restricted IG from features the per-language quota missed.

@@ -14,8 +14,15 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
-from .common import ALT_CLASS, CLASS_SCRIPT, SPLIT_SCRIPT, script_filter, walk_corpus
-from .gather_data import MIN_DOC, valid_docs, write_docs
+from .common import (
+    ALT_CLASS,
+    CLASS_SCRIPT,
+    MIN_DOC,
+    SPLIT_SCRIPT,
+    script_filter,
+    walk_corpus,
+)
+from .gather_data import valid_docs, write_docs
 from .sources import ISO3
 
 GLOTCC_REPO = "cis-lmu/GlotCC-V1"

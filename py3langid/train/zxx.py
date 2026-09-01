@@ -12,6 +12,8 @@ import string
 import sys
 from pathlib import Path
 
+from .common import DOC_CAP
+
 DOCS_PER_DOMAIN = 300
 DOMAIN_SEEDS = {"wiki": 1, "cc100": 2}
 
@@ -41,7 +43,7 @@ def _doc(rng):
         else:
             tok = "".join(rng.choice(string.ascii_lowercase) for _ in range(rng.randint(2, 6)))
             lines.append(" ".join([tok] * rng.randint(5, 15)))
-    return "\n".join(lines).encode()[:3000]
+    return "\n".join(lines).encode()[:DOC_CAP]
 
 
 def ensure_zxx(corpus):

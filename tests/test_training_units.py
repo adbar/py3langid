@@ -1,6 +1,7 @@
 """Unit tests for the numeric core of the training pipeline."""
 import math
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,20 +23,25 @@ from py3langid.train.shards import (
 )
 from py3langid.train.stages import (
     compute_IG,
-    compute_IG_binarized,
     entropy,
+    ld_weights,
     ngram_select,
     select_LD_features,
 )
 
 
-@pytest.fixture
-def tokenize_order2(monkeypatch):
-    """Tokenize byte order 2 only, so a shard payload is small enough to
-    assert on exactly. Moves the tokenizer and the cache key together, but
-    NOT selection: SELECT_ORDERS is derived at import, so tests needing a
-    different selection pass ngram_select's `orders`."""
-    monkeypatch.setattr("py3langid.train.shards.MAX_NGRAM_ORDER", 2)
+def make_corpus(tmp_path, docs):
+    """Write tmp_path/corpus/<domain>/<lang>/docN.txt from (domain, lang, data)
+    triples. @returns (build_shards items, shard dir)"""
+    items = []
+    for domain, lang, data in docs:
+        lang_dir = tmp_path / "corpus" / domain / lang
+        lang_dir.mkdir(parents=True, exist_ok=True)
+        seen = sum(1 for item in items if item[:2] == (domain, lang))
+        path = lang_dir / f"doc{seen}.txt"
+        path.write_bytes(data)
+        items.append((domain, lang, str(path)))
+    return items, str(tmp_path / "shards")
 
 
 def test_entropy():
@@ -74,16 +80,6 @@ def test_doc_ngrams_matches_unrestricted_selection():
     assert doc_ngrams(data, TOKENIZE_ORDER - 1) == selectable
 
 
-def test_ngram_select_restricts_tokenize_order_to_cjk():
-    """order TOKENIZE_ORDER admits CJK bigrams only, whatever the shards
-    hold there: at MAX_NGRAM_ORDER >= TOKENIZE_ORDER tokenization emits
-    plain 6-grams, which must not become features"""
-    cjk = "\u4e2d\u6587".encode()
-    doc_count = {cjk: 5, b"abcdef": 99, b"ab": 3}
-    selected = ngram_select(doc_count, 10, orders={2, TOKENIZE_ORDER})
-    assert selected == [b"ab", cjk]  # b"abcdef" dropped despite the top DF
-
-
 def test_compute_IG_nonbinarized():
     # 2 events with 2 docs each. b'aa' occurs only in event 0 (perfectly
     # discriminative, IG = log 2); b'bb' occurs once per event (IG = 0).
@@ -98,25 +94,73 @@ def test_compute_IG_nonbinarized():
     assert list(degenerate) == [0.0, 0.0]
 
 
-def test_compute_IG_binarized():
-    # Same data, binarized per event: shape (num_term, num_event),
-    # same exact values by symmetry.
+def _ld_matrix(cm, dist, domain_ig=None):
+    """ld_weights' columns stacked, for tests that want the whole matrix."""
+    if domain_ig is None:
+        domain_ig = np.zeros(len(cm))
+    return np.stack(list(ld_weights(cm, dist, domain_ig)), axis=1)
+
+
+def test_ld_weights():
+    # Binarized per language: same data and, by symmetry, the same exact
+    # values as the non-binarized IG above.
     cm = np.array([[2, 0], [1, 1]])
     dist = np.array([2, 2])
-    ig = compute_IG_binarized(cm, dist)
+    ig = _ld_matrix(cm, dist)
     assert ig.shape == (2, 2)
-    for event in range(2):
-        assert math.isclose(ig[0, event], math.log(2))
-        assert math.isclose(ig[1, event], 0.0, abs_tol=1e-12)
+    for lang in range(2):
+        assert math.isclose(ig[0, lang], math.log(2))
+        assert math.isclose(ig[1, lang], 0.0, abs_tol=1e-12)
     assert not np.isnan(ig).any()
-    # degenerate terms and a single-event corpus both score 0, not nan
-    assert not compute_IG_binarized(np.array([[0, 0], [2, 2]]), dist).any()
-    assert not compute_IG_binarized(np.array([[2], [0]]), np.array([2])).any()
-    # chunking over terms cannot change a value
+    # degenerate terms and a single-language corpus both score 0, not nan
+    assert not _ld_matrix(np.array([[0, 0], [2, 2]]), dist).any()
+    assert not _ld_matrix(np.array([[2], [0]]), np.array([2])).any()
+    # one column per language, in column order, whatever the term count
     big = np.array([[2, 0], [1, 1], [0, 2], [2, 2], [0, 0]])
-    assert np.array_equal(compute_IG_binarized(big, dist, chunk=2),
-                          compute_IG_binarized(big, dist, chunk=99))
+    assert len(list(ld_weights(big, dist, np.zeros(5)))) == 2
+    # the domain IG is a per-term offset subtracted from every column
+    domain_ig = np.array([0.25, 0.5])
+    assert np.array_equal(_ld_matrix(cm, dist, domain_ig),
+                          _ld_matrix(cm, dist) - domain_ig[:, None])
 
+
+
+def test_ld_weights_matches_contingency_table():
+    """the fused per-column formula against a brute-force 2x2 IG reference"""
+    def brute(cm, dist):
+        cm, dist = np.asarray(cm, float), np.asarray(dist, float)
+        n = dist.sum()
+
+        def H(*ps):
+            return -sum(p * math.log(p) for p in ps if p > 0)
+
+        out = np.zeros(cm.shape)
+        for i in range(cm.shape[0]):
+            t = cm[i].sum()
+            for j in range(cm.shape[1]):
+                a, b, c = cm[i, j], t - cm[i, j], dist[j] - cm[i, j]
+                d = (n - t) - c
+                cond = (t / n) * H(a / t, b / t) if t else 0.0
+                if n - t:
+                    cond += ((n - t) / n) * H(c / (n - t), d / (n - t))
+                out[i, j] = H(dist[j] / n, (n - dist[j]) / n) - cond
+        return out
+
+    rng = np.random.default_rng(0)
+    cases = []
+    for _ in range(40):
+        nl, nt = int(rng.integers(1, 7)), int(rng.integers(1, 12))
+        dist = rng.integers(1, 40, nl)
+        cases.append((np.array([[rng.integers(0, dist[j] + 1) for j in range(nl)]
+                                for _ in range(nt)], dtype=np.int32), dist))
+    # all-zero rows, a single language, an entirely empty matrix
+    cases += [(np.array([[0, 0], [2, 2]], dtype=np.int32), np.array([2, 2])),
+              (np.array([[2], [0]], dtype=np.int32), np.array([2])),
+              (np.zeros((3, 4), dtype=np.int32), np.array([5, 5, 5, 5]))]
+    for cm, dist in cases:
+        got = _ld_matrix(cm, dist)
+        assert not np.isnan(got).any()
+        assert np.allclose(got, brute(cm, dist), atol=1e-12)
 
 def test_select_LD_features():
     # LD = IG_lang - IG_domain: term 2 is penalized for being domain-informative
@@ -126,12 +170,12 @@ def test_select_LD_features():
         [-0.1, -0.1],
     ])
     present = np.ones(ld.shape, dtype=bool)
-    assert select_LD_features(ld, 1, present) == {0, 1}
-    assert select_LD_features(ld, 3, present) == {0, 1, 2}
+    assert select_LD_features(ld.T, 1, present) == {0, 1}
+    assert select_LD_features(ld.T, 3, present) == {0, 1, 2}
     # a language's picks are restricted to features present in it
     only_first = np.array([[True, True], [False, True], [False, True]])
-    assert select_LD_features(ld, 3, only_first) == {0, 1, 2}
-    assert select_LD_features(ld, 1, only_first) == {0, 1}
+    assert select_LD_features(ld.T, 3, only_first) == {0, 1, 2}
+    assert select_LD_features(ld.T, 1, only_first) == {0, 1}
 
 
 def test_ngram_select():
@@ -141,13 +185,9 @@ def test_ngram_select():
 
 
 def test_build_shards_cache(tmp_path, tokenize_order2):
-    lang_dir = tmp_path / "corpus" / "web" / "en"
-    lang_dir.mkdir(parents=True)
-    doc0 = lang_dir / "doc0.txt"
-    doc0.write_bytes(b"abab")
-    (lang_dir / "doc1.txt").write_bytes(b"ab")
-    items = [("web", "en", str(lang_dir / f"doc{i}.txt")) for i in range(2)]
-    shard_dir = str(tmp_path / "shards")
+    items, shard_dir = make_corpus(tmp_path, [("web", "en", b"abab"),
+                                              ("web", "en", b"ab")])
+    doc0 = Path(items[0][2])
 
     [(domain, lang, shard_path)] = build_shards(items, shard_dir, jobs=1)
     assert (domain, lang) == ("web", "en")
@@ -182,12 +222,8 @@ def test_chunks_and_job_chunks():
 def test_merge_docfreq_spans_chunks(tmp_path, monkeypatch, tokenize_order2):
     """the merge reduces across several chunks, not just one"""
     monkeypatch.setattr("py3langid.train.shards.MERGE_SHARDS_PER_CHUNK", 2)
-    items, shard_dir = [], str(tmp_path / "shards")
-    for i in range(5):
-        d = tmp_path / "corpus" / "web" / f"l{i}"
-        d.mkdir(parents=True)
-        (d / "doc0.txt").write_bytes(b"abab")
-        items.append(("web", f"l{i}", str(d / "doc0.txt")))
+    items, shard_dir = make_corpus(
+        tmp_path, [("web", f"l{i}", b"abab") for i in range(5)])
     shard_items = build_shards(items, shard_dir, jobs=1)
     assert len(chunks(shard_items, 2)) == 3   # the path under test
     # every shard is b"abab": df 1 per shard, so 5 shards sum to 5
@@ -196,14 +232,10 @@ def test_merge_docfreq_spans_chunks(tmp_path, monkeypatch, tokenize_order2):
 
 def test_count_matrices(tmp_path, tokenize_order2):
     """per-lang/per-domain docfreq and domain presence, in one shard pass"""
-    items, shard_dir = [], str(tmp_path / "shards")
     # en appears in two domains, fr in one
-    for domain, lang, data in (("web", "en", b"abab"), ("news", "en", b"abab"),
-                               ("web", "fr", b"cdcd")):
-        d = tmp_path / "corpus" / domain / lang
-        d.mkdir(parents=True)
-        (d / "doc0.txt").write_bytes(data)
-        items.append((domain, lang, str(d / "doc0.txt")))
+    items, shard_dir = make_corpus(tmp_path, [("web", "en", b"abab"),
+                                              ("news", "en", b"abab"),
+                                              ("web", "fr", b"cdcd")])
     shard_items = build_shards(items, shard_dir, jobs=1)
 
     feats = [b"ab", b"cd"]
@@ -221,12 +253,8 @@ def test_shard_cache_keyed_on_tokenization(tmp_path, monkeypatch):
     """Reuse is exact key equality: editing a tokenization constant rebuilds
     instead of serving shards written under the old one. (Reuse used to be
     order >=, which let features depend on the cache's history.)"""
-    d = tmp_path / "corpus" / "web" / "zh"
-    d.mkdir(parents=True)
-    doc = d / "doc0.txt"
-    doc.write_bytes("中文abcdef".encode())
-    items = [("web", "zh", str(doc))]
-    shard_dir = str(tmp_path / "shards")
+    items, shard_dir = make_corpus(
+        tmp_path, [("web", "zh", "中文abcdef".encode())])
 
     [(_, _, shard_path)] = build_shards(items, shard_dir, jobs=1)
     terms = load_shard(shard_path)
@@ -303,30 +331,34 @@ def test_cluster_features():
     assert run(set(), 3, clusters=(("en", "xx"),)) == set()
 
 
-def test_build_scanner_longest_match():
-    """the DFA emits, at each byte position, the longest feature ending there"""
+def longest_endings(feats, data):
+    """Reference scanner, naive O(n*|feats|): index of the longest feature
+    ending at each byte position, -1 where none does."""
+    res = []
+    for end in range(1, len(data) + 1):
+        hits = [f for f in feats if data[:end].endswith(f)]
+        res.append(feats.index(max(hits, key=len)) if hits else -1)
+    return res
+
+
+@pytest.fixture(scope="module")
+def longest_match_dfa():
     from py3langid.train.scanner import build_scanner
 
     feats = [b"ab", b"abc", b"bc", b"c", b"xy", b"aab"]
-    rows, row_index, out = build_scanner(feats)
-    index = {f: i for i, f in enumerate(feats)}
+    return feats, build_scanner(feats)
 
-    def walk(data):
-        state, got = 0, []
-        for byte in data:
-            state = rows[(row_index[state] << 8) + byte]
-            got.append(out[state])
-        return got
 
-    def longest_endings(data):
-        res = []
-        for end in range(1, len(data) + 1):
-            hits = [f for f in feats if data[:end].endswith(f)]
-            res.append(index[max(hits, key=len)] if hits else -1)
-        return res
-
-    for data in (b"", b"c", b"zzz", b"xy", b"xabcy", b"abcabc", b"aabc"):
-        assert walk(data) == longest_endings(data), data
+@pytest.mark.parametrize("data", [b"", b"c", b"zzz", b"xy", b"xabcy",
+                                 b"abcabc", b"aabc"])
+def test_build_scanner_longest_match(longest_match_dfa, data):
+    """the DFA emits, at each byte position, the longest feature ending there"""
+    feats, (rows, row_index, out) = longest_match_dfa
+    state, got = 0, []
+    for byte in data:
+        state = rows[(row_index[state] << 8) + byte]
+        got.append(out[state])
+    assert got == longest_endings(feats, data)
 
 
 def test_build_scanner_shares_every_duplicate_row():
@@ -344,7 +376,7 @@ def test_build_scanner_shares_every_duplicate_row():
     assert len(contents) == stored
 
 
-def test_feature_counts(tmp_path):
+def test_feature_counts(tmp_path, monkeypatch):
     """NB numerators = one longest match per byte position, per language"""
     from py3langid.train.scanner import build_scanner
     from py3langid.train.stages import feature_counts
@@ -361,28 +393,22 @@ def test_feature_counts(tmp_path):
             items.append(("dom", lang, str(path)))
     lang_index = {"en": 0, "fr": 1}
 
-    def brute(text):
-        """count the longest feature ending at each position"""
-        counts = [0] * len(feats)
-        for end in range(1, len(text) + 1):
-            hits = [f for f in feats if text[:end].endswith(f)]
-            if hits:
-                counts[feats.index(max(hits, key=len))] += 1
-        return counts
-
     expected = np.zeros((len(feats), 2), dtype=np.int64)
     for lang, texts in docs.items():
         for text in texts:
-            expected[:, lang_index[lang]] += brute(text)
+            for feat in longest_endings(feats, text):
+                if feat >= 0:
+                    expected[feat, lang_index[lang]] += 1
 
     got = feature_counts(items, rows, row_index, out, len(feats), lang_index,
-                         0, jobs=1)
+                         jobs=1)
     assert np.array_equal(got, expected)
     # worker partials are integer sums: the parallel result is exact
     assert np.array_equal(
         feature_counts(items, rows, row_index, out, len(feats), lang_index,
-                       0, jobs=2), expected)
-    # doc_cap truncates before counting
+                       jobs=2), expected)
+    # DOC_CAP truncates before counting
+    monkeypatch.setattr("py3langid.train.stages.DOC_CAP", 2)
     capped = feature_counts(items, rows, row_index, out, len(feats),
-                            lang_index, 2, jobs=1)
+                            lang_index, jobs=1)
     assert capped.sum() < expected.sum()

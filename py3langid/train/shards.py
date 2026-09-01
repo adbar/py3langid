@@ -28,6 +28,7 @@ from collections import Counter, defaultdict
 import numpy as np
 
 from .common import (
+    DOC_CAP,
     MAX_NGRAM_ORDER,
     MIN_NGRAM_ORDER,
     TOKENIZE_ORDER,
@@ -77,13 +78,13 @@ def group_items(items):
     return sorted(groups.items())
 
 
-def _group_key(paths, doc_cap):
+def _group_key(paths):
     """Cache key: the docs' (filename, size, mtime) plus everything that
     changes what doc_ngrams emits, so editing a tokenization constant
     invalidates the cache."""
     h = hashlib.sha256()
     h.update(f"{MIN_NGRAM_ORDER}\0{MAX_NGRAM_ORDER}\0{TOKENIZE_ORDER}\0"
-             f"{doc_cap}\0".encode())
+             f"{DOC_CAP}\0".encode())
     for p in sorted(paths):
         st = os.stat(p)
         h.update(f"{os.path.basename(p)}\0{st.st_size}\0{st.st_mtime_ns}\0".encode())
@@ -94,7 +95,6 @@ def _build_shard(arg):
     """Build one shard unless a valid cached one exists.
     @returns (shard_path, built)
     """
-    doc_cap, = shared()
     shard_path, key, paths = arg
     try:
         with open(shard_path, 'rb') as f:
@@ -105,7 +105,7 @@ def _build_shard(arg):
 
     docfreq = Counter()
     for path in paths:
-        docfreq.update(doc_ngrams(read_doc(path, doc_cap), MAX_NGRAM_ORDER))
+        docfreq.update(doc_ngrams(read_doc(path, DOC_CAP), MAX_NGRAM_ORDER))
 
     tmp_path = shard_path + '.tmp'
     with open(tmp_path, 'wb') as f:
@@ -115,23 +115,21 @@ def _build_shard(arg):
     return shard_path, True
 
 
-def build_shards(items, shard_dir, jobs=None, doc_cap=0):
+def build_shards(items, shard_dir, jobs=None):
     """Build (or reuse cached) shards for all (domain, lang) groups.
 
     @param items (domain, lang, path) triples with string names
-    @param doc_cap truncate each doc to this many bytes (0 = no cap);
-        part of the shard filename, so one shard dir serves any mix of caps
     @returns list of (domain, lang, shard_path), sorted by (domain, lang)
     """
     os.makedirs(shard_dir, exist_ok=True)
     tasks = []
     shard_items = []
     for (domain, lang), paths in group_items(items):
-        shard_path = os.path.join(shard_dir, f"{domain}__{lang}.cap{doc_cap}")
-        tasks.append((shard_path, _group_key(paths, doc_cap), paths))
+        shard_path = os.path.join(shard_dir, f"{domain}__{lang}")
+        tasks.append((shard_path, _group_key(paths), paths))
         shard_items.append((domain, lang, shard_path))
 
-    with MapPool(jobs, set_shared, (doc_cap,)) as f:
+    with MapPool(jobs) as f:
         built = sum(new for _, new in f(_build_shard, tasks))
     print(f"shards: {built} built, {len(tasks) - built} cached")
     return shard_items

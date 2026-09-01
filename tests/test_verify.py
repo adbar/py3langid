@@ -1,6 +1,6 @@
 """Unit tests for split-script routing and the self-verify decision."""
-from py3langid.train.common import latin_majority, route_script
-from py3langid.train.gather_data import MIN_DOC, write_docs
+from py3langid.train.common import MIN_DOC, latin_majority, route_script
+from py3langid.train.gather_data import write_docs
 from py3langid.train.verify import is_foreign
 
 

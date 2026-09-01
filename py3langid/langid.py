@@ -11,9 +11,8 @@ See LICENSE file for more info.
 """
 
 import logging
-import lzma
+import math
 import unicodedata
-import zipfile
 from collections import Counter
 from operator import itemgetter
 from pathlib import Path
@@ -34,15 +33,10 @@ RAW_FLOOR = float(np.finfo(np.float32).min)
 
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
     """Load an identifier: external model if given, else the bundled one."""
-    identifier = None
     if model_path:
-        try:
-            identifier = LanguageIdentifier.from_modelpath(model_path, norm_probs=norm_probs)
-            LOGGER.info("Using external model: %s", model_path)
-        except (OSError, EOFError, KeyError, ValueError, lzma.LZMAError,
-                zipfile.BadZipFile) as e:
-            LOGGER.warning("Failed to load %s: %s", model_path, e)
-    if identifier is None:
+        identifier = LanguageIdentifier.from_modelpath(model_path, norm_probs=norm_probs)
+        LOGGER.info("Using external model: %s", model_path)
+    else:
         identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=norm_probs)
     if langs:
         identifier.set_languages(langs)
@@ -157,19 +151,24 @@ class LanguageIdentifier:
     @staticmethod
     def _encode(text):
         if isinstance(text, bytes):
-            # decode so case normalization applies uniformly to str and bytes
-            try:
-                text = text.decode('utf8')
-            except UnicodeDecodeError:
-                pass
+            # decode so case normalization applies uniformly to str and bytes.
+            # a byte read can stop mid-codepoint -- 22% of corpus byte
+            # positions are continuation bytes -- so retry without the partial
+            # tail, as train.common.nfc_bytes does. Reaching the str branch at
+            # all is what matters: bailing out here also skipped the lower()
+            # below, costing 23 pp on all-caps input (measured, held-out WiLI).
+            for trim in range(4):
+                chunk = text[:len(text) - trim] if trim else text
+                try:
+                    text = chunk.decode('utf8')
+                except UnicodeDecodeError:
+                    continue
+                break
         if isinstance(text, str):
             if text.isupper():
                 text = text.lower()
             # NFC, as the training corpus (train.common.nfc_bytes)
-            try:
-                text = unicodedata.normalize('NFC', text)
-            except ValueError:
-                pass
+            text = unicodedata.normalize('NFC', text)
             text = text.encode('utf8', errors='surrogatepass')
         return text
 
@@ -205,19 +204,20 @@ class LanguageIdentifier:
         fill = 0.0 if self._norm_probs else RAW_FLOOR
         return np.full(len(self.nb_classes), fill, dtype=np.float32)
 
-    def _normalize(self, probs, nbytes):
-        if self._norm_probs:
-            # T = sqrt(bytes): score noise grows ~sqrt(n), keeping the
-            # softmax calibrated at every length without fitted constants
-            probs = probs / np.sqrt(max(nbytes, 1))
-            e = np.exp(probs - probs.max())
-            probs = e / e.sum()
-        return probs
-
     def _decide(self, text):
         "Shared by classify() and rank(): one normalized score per class column."
         text = self._encode(text)
-        return self._normalize(self._raw_score(text), len(text))
+        scores = self._raw_score(text)
+        if self._norm_probs:
+            # T = sqrt(bytes): score noise grows ~sqrt(n), keeping the softmax
+            # calibrated at every length without fitted constants. math.sqrt,
+            # not np.sqrt: a numpy scalar would widen the vector to float64
+            # (measured -5% per call). _raw_score always returns a fresh
+            # array, so the softmax runs in place.
+            scores *= 1.0 / math.sqrt(len(text) or 1)
+            np.exp(scores - scores.max(), out=scores)
+            scores /= scores.sum()
+        return scores
 
     def classify(self, text):
         # no per-label collapse first: a label's score is the best of its

@@ -14,8 +14,9 @@ per language to separate language signal from domain signal, so more
 domains generalize better.
 
 The released model is trained on 130,914 docs, capped at 300 docs per
-language per domain and 3,000 bytes per doc (`--doc_cap`, equalizes byte
-weight across domains):
+language per domain and 3,000 bytes per doc (`DOC_CAP` in `common.py`, the
+pipeline's one doc byte budget — gathering, tokenization, the verifier and
+`zxx` all read it):
 
 | Domain      | Source                    | Docs   | Register       |
 |-------------|---------------------------|--------|----------------|
@@ -77,13 +78,13 @@ strips foreign paragraphs in place instead of dropping docs.
 python -m py3langid.train.train -m model_dir corpus
 ```
 
-Bare defaults reproduce the release config. `--doc_cap` and
-`--feats_per_lang` are the sweep knobs; the n-gram orders (2-5, plus the
-CJK bigram order) and the DF pool size (60000/order) are constants in
-`common.py` — `MIN_NGRAM_ORDER`, `MAX_NGRAM_ORDER`, `SELECT_ORDERS`,
-`DF_TOKENS` — because they were settled by sweeps and the orders decide
-what tokenization writes into the shard cache. Warm run ~54s, cold ~29s
-more for tokenization, peak memory 2.4 GB at `-j 10`.
+Bare defaults reproduce the release config, byte for byte.
+`--feats_per_lang` is the only sweep knob left as a flag: everything that
+decides what tokenization writes into the cache is a constant in
+`common.py` (`MIN_NGRAM_ORDER`, `MAX_NGRAM_ORDER`, `SELECT_ORDERS`,
+`DF_TOKENS`, `DOC_CAP`), since a flag there is a cache-key axis. Sweep by
+editing the constant; the cache invalidates itself. Warm run ~57s at
+`-j 10`, cold ~29s more for tokenization.
 
 How it works:
 
@@ -95,9 +96,8 @@ How it works:
   order constant re-tokenizes rather than serving stale shards.
 - Order 6 is restricted to CJK codepoint bigrams: byte order 5 cannot span
   two 3-byte codepoints, so those are the only order-6 terms worth having.
-  The restriction is applied at feature selection (`ngram_select`), not at
-  tokenization, so the features chosen never depend on which `--max_order`
-  happened to populate the shard cache.
+  `doc_ngrams` enforces this alone — the orders are in the shard cache key,
+  so a shard written under other rules is never read.
 - Feature selection takes the top `DF_TOKENS` terms per order as
   candidates (order 6 = the CJK bigrams), then the top `feats_per_lang`
   per language by LD weight, restricted to terms the language shows in

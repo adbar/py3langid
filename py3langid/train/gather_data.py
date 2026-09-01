@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..modelio import load_model
-from .common import SPLIT_SCRIPT, route_script
+from .common import DOC_CAP, MIN_DOC, SPLIT_SCRIPT, route_script
 from .sources import CC100_CODE, ISO3, LEIPZIG_NAME, WIKI_CODE
 
 TATOEBA_URL = "https://downloads.tatoeba.org/exports/sentences.tar.bz2"
@@ -27,8 +27,6 @@ CIRRUS_INDEX = "https://dumps.wikimedia.org/other/cirrus_search_index/"
 CIRRUS_URL = CIRRUS_INDEX + "{date}/index_name%3D{code}wiki_content/{code}wiki_content-{date}-00000.json.bz2"
 LEIPZIG_URL = "https://downloads.wortschatz-leipzig.de/corpora/{name}.tar.gz"
 
-MIN_DOC = 500       # skip stubs
-MAX_DOC = 3_000     # truncate long docs; equalizes byte weight across domains
 CC100_RANGE = 2 * 1024 * 1024
 RAW_CACHE = Path("raw_downloads")  # downloads kept on disk, reused on re-gather
 
@@ -132,7 +130,7 @@ def valid_doc(doc):
     """Strip, truncate, drop stubs. EVERY source routes docs through this,
     so no domain enters the corpus under a different rule.
     @returns the doc bytes, or None if it is a stub"""
-    doc = doc.strip()[:MAX_DOC]
+    doc = doc.strip()[:DOC_CAP]
     return doc if len(doc) >= MIN_DOC else None
 
 
