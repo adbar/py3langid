@@ -1,7 +1,4 @@
-"""Gather a multi-domain training corpus (see TRAINING.md).
-
-Output layout: OUTPUT/{tatoeba,cc100,wiki,leipzig}/{lang}/docNNNN.txt (UTF-8 bytes).
-"""
+"""Gather a multi-domain training corpus (see TRAINING.md)."""
 
 import argparse
 import bz2
@@ -34,7 +31,6 @@ USER_AGENT = "py3langid-gather/0.1 (https://github.com/adbar/py3langid)"
 
 
 def fetch(url, headers=None, retries=3):
-    # wikimedia rejects the default urllib User-Agent
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     for attempt in range(retries):
         try:
@@ -50,7 +46,7 @@ def fetch(url, headers=None, retries=3):
 
 
 def fetch_cached(url, cache_path, headers=None):
-    """Download url fully to cache_path once; return an open binary handle."""
+    """Download to cache_path once; return open binary handle."""
     if not cache_path.exists():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache_path.with_name(cache_path.name + ".tmp")
@@ -61,7 +57,7 @@ def fetch_cached(url, cache_path, headers=None):
 
 
 class _TeeReader:
-    """Mirrors consumed response bytes to a cache file; kept only on finalize()."""
+    """Tee response bytes to a cache file; kept on finalize()."""
 
     def __init__(self, resp, cache_path):
         self.resp = resp
@@ -98,7 +94,7 @@ def model_langs():
 
 
 class DocWriter:
-    """Routes docs by script, numbers files, enforces per-dir caps."""
+    """Route docs by script, number files, enforce per-dir caps."""
 
     def __init__(self, out_dir, max_docs):
         self.out_dir = out_dir
@@ -115,7 +111,6 @@ class DocWriter:
 
     @property
     def done(self):
-        """For split-script langs, done when both halves are full."""
         spec = SPLIT_SCRIPT.get(self.lang)
         if spec:
             return min(self.counts[self.lang], self.counts[spec.alt]) >= self.max_docs
@@ -127,15 +122,12 @@ class DocWriter:
 
 
 def valid_doc(doc):
-    """Strip, truncate, drop stubs. EVERY source routes docs through this,
-    so no domain enters the corpus under a different rule.
-    @returns the doc bytes, or None if it is a stub"""
+    """Strip, truncate to DOC_CAP, drop stubs. Returns bytes or None."""
     doc = doc.strip()[:DOC_CAP]
     return doc if len(doc) >= MIN_DOC else None
 
 
 def valid_docs(docs):
-    """valid_doc over a stream, dropping stubs."""
     return (d for d in map(valid_doc, docs) if d is not None)
 
 
@@ -154,7 +146,6 @@ def gather_cc100(out_root, lang, max_docs):
                       RAW_CACHE / "cc100" / f"{code}.txt.xz.head{CC100_RANGE}",
                       {"Range": f"bytes=0-{CC100_RANGE - 1}"}) as resp:
         data = resp.read()
-    # tolerant decompression of the truncated .xz prefix: keep partial output
     out = []
     dec = lzma.LZMADecompressor()
     try:
@@ -162,16 +153,12 @@ def gather_cc100(out_root, lang, max_docs):
             out.append(dec.decompress(data[i:i + (1 << 16)]))
     except lzma.LZMAError:
         pass
-    docs = b"".join(out).split(b"\n\n")[:-1]  # last doc may be cut
+    docs = b"".join(out).split(b"\n\n")[:-1]
     return write_docs(out_root / "cc100" / lang, docs, max_docs)
 
 
 def gather_wiki(out_root, lang, max_docs, date):
     code = WIKI_CODE.get(lang, lang)
-    # cirrus dumps vanish upstream: keep the consumed .bz2 prefix on disk.
-    # The prefix is only as long as the run that wrote it needed, so the doc
-    # target is part of the name and only a >= prefix may be reused -- else a
-    # later, larger run would hit EOF early and silently gather too little.
     stem = f"{code}wiki-{date}.json.bz2.head"
     cache = RAW_CACHE / "wiki" / f"{stem}{max_docs}"
     usable = [p for p in sorted(cache.parent.glob(f"{stem}*"))
@@ -199,7 +186,7 @@ def gather_wiki(out_root, lang, max_docs, date):
                 text = json.loads(line).get("text")
                 if text:
                     doc = text.encode("utf-8").strip()
-                    if len(doc) >= MIN_DOC:  # filter stubs while reading
+                    if len(doc) >= MIN_DOC:
                         docs.append(doc)
     return write_docs(out_root / "wiki" / lang, docs, max_docs)
 
@@ -213,12 +200,11 @@ def gather_tatoeba(out_root, langs, max_docs, per_doc):
     remaining = set(by_iso3.values())
     buf = defaultdict(list)
     writers = {}
-    resp = fetch_cached(TATOEBA_URL, RAW_CACHE / "tatoeba" / "sentences.tar.bz2")
-    with tarfile.open(fileobj=resp, mode="r|bz2") as tar:
+    with fetch_cached(TATOEBA_URL, RAW_CACHE / "tatoeba" / "sentences.tar.bz2") as resp, \
+         tarfile.open(fileobj=resp, mode="r|bz2") as tar:
         for member in tar:
             if not member.name.endswith("sentences.csv"):
                 continue
-            # no TextIOWrapper: the streamed tar member is not seekable
             for raw in tar.extractfile(member):
                 parts = raw.decode("utf-8").rstrip("\n").split("\t")
                 if len(parts) != 3:
@@ -230,7 +216,7 @@ def gather_tatoeba(out_root, langs, max_docs, per_doc):
                 if len(buf[lang]) == per_doc:
                     doc = valid_doc("\n".join(buf[lang]).encode("utf-8"))
                     buf[lang] = []
-                    if doc is None:  # too few bytes for per_doc sentences
+                    if doc is None:
                         continue
                     if lang not in writers:
                         writers[lang] = DocWriter(out_root / "tatoeba" / lang, max_docs)
@@ -267,12 +253,10 @@ def gather_leipzig(out_root, lang, max_docs, per_doc):
 def latest_cirrus_date():
     html = fetch(CIRRUS_INDEX).read().decode()
     dates = sorted(set(re.findall(r'href="(\d{8})/"', html)))
-    # newest dir may be an in-progress dump
     return dates[-2] if len(dates) > 1 else dates[-1]
 
 
 def per_lang_domain(name, func, langs, jobs, out_root, max_docs):
-    # resume: skip languages already gathered (glob on a missing dir is empty)
     todo = [lang for lang in langs
             if sum(1 for _ in (out_root / name / lang).glob("*.txt")) < max_docs]
     if len(todo) < len(langs):
@@ -297,8 +281,8 @@ def main(argv=None):
     parser.add_argument("--output", required=True, help="corpus output directory")
     parser.add_argument("--langs", help="comma-separated language codes (default: the shipped model's labels)")
     parser.add_argument("--domains", default="tatoeba,cc100,wiki,leipzig", help="comma-separated subset of domains")
-    parser.add_argument("--max-docs-per-lang", type=int, default=300)
-    parser.add_argument("--sentences-per-doc", type=int, default=50)
+    parser.add_argument("--max-docs-per-lang", type=int, default=300, help="cap per language per domain (default: 300)")
+    parser.add_argument("--sentences-per-doc", type=int, default=50, help="sentences per doc (default: 50)")
     parser.add_argument("--jobs", type=int, default=4, help="parallel downloads (cc100/wiki)")
     parser.add_argument("--wiki-date", help="cirrus dump date YYYYMMDD (default: latest complete)")
     args = parser.parse_args(argv)

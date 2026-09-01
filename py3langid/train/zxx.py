@@ -1,10 +1,4 @@
-"""Synthetic not-a-language (zxx) training docs: numbers, symbols,
-gibberish, base64/hex, URLs, markup, config soup, repeated tokens.
-Deliberately NO real code (user decision 2026-08-26: code reads as en).
-Deterministic seeds per domain reproduce the validated class exactly.
-
-    python -m py3langid.train.zxx CORPUS_DIR
-"""
+"""Synthetic not-a-language (zxx) training docs. Deterministic per-domain seeds."""
 import base64
 import json
 import random
@@ -47,7 +41,7 @@ def _doc(rng):
 
 
 def ensure_zxx(corpus):
-    """Write the zxx dirs if absent; returns number of docs written."""
+    """Write zxx dirs if absent. Returns docs written."""
     written = 0
     for domain, seed in DOMAIN_SEEDS.items():
         out = Path(corpus) / domain / "zxx"

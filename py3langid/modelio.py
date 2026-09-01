@@ -1,17 +1,7 @@
-"""Model serialization: uncompressed NumPy .npz inside an LZMA stream, no pickle.
-Arrays: ptc float16, pc float32, classes unicode, nextmove uint16
-(auto-widened to uint32 past 65,536 DFA states), out_feat int32 = the one
-feature each DFA state emits (-1 = none; the scanner emits the longest
-match per position, so there is exactly one).
-The DFA table shares rows: `nextmove` holds only the distinct 256-byte
-transition rows and `nextmove_row` maps state -> row -- as build_scanner
-produces it and the runtime walks it, so save_model and load_model are
-inverses. Both keys are required; models predating them are rejected.
-Arrays of the retired gated blend, if present, are ignored.
+"""Model serialization: npz inside LZMA, no pickle.
 
-The loader streams the LZMA into a temp file and reads one array at a time,
-so peak memory is the largest single array rather than the whole (~90 MB)
-uncompressed npz.
+DFA rows are deduplicated: `nextmove` holds distinct 256-byte rows,
+`nextmove_row` maps state → row. Both keys required; legacy models rejected.
 """
 
 import io
@@ -24,11 +14,7 @@ import numpy as np
 
 
 def _canonical_rows(rows, row_index):
-    """Sort the transition rows and remap the state -> row index onto them,
-    narrowed to uint16 while it fits. build_scanner already shares rows, so
-    only the order matters here: the runtime ignores it, fixing it keeps the
-    file reproducible, and sorting groups similar rows, worth ~3% to LZMA.
-    @returns (rows flat, row index)"""
+    """Sort transition rows for reproducibility; narrow to uint16 if possible."""
     uniq, index = np.unique(np.asarray(rows).reshape(-1, 256), axis=0,
                             return_inverse=True)
     dtype = np.uint16 if len(uniq) < 1 << 16 else np.uint32
@@ -36,17 +22,14 @@ def _canonical_rows(rows, row_index):
 
 
 def expand_nextmove(rows, row_index):
-    """Undo the row sharing: one 256-entry transition row per state. Only for
-    consumers wanting a flat table; neither the file nor the runtime needs one.
-    @returns an array of the same typecode as `rows`"""
+    """Undo row sharing: one 256-entry row per state."""
     table = np.asarray(rows).reshape(-1, 256)[np.asarray(row_index)]
     return array(rows.typecode if isinstance(rows, array) else
                  {2: "H", 4: "I", 8: "L"}[table.dtype.itemsize], table.ravel())
 
 
 def save_model(path, model):
-    """Write a (nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output)
-    tuple: build_scanner's DFA, and load_model's return value."""
+    """Write (nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output)."""
     nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output = model
     nextmove = np.asarray(tk_nextmove)
     dtype = np.uint16 if not nextmove.size or nextmove.max() < 1 << 16 else np.uint32
@@ -54,8 +37,6 @@ def save_model(path, model):
     out_feat = np.asarray(tk_output, dtype=np.int32)
     assert len(out_feat) == len(row_index), "one output slot per DFA state"
     arrays = {
-        # float16 log P(f|c): 0.007 nats of rounding, measured label-neutral,
-        # and matmul promotes it to float32 exactly at scoring time
         "ptc": np.asarray(nb_ptc, dtype=np.float16).reshape(-1, len(nb_pc)),
         "pc": np.asarray(nb_pc, dtype=np.float32),
         "classes": np.array(nb_classes),
@@ -70,21 +51,15 @@ def save_model(path, model):
 
 
 def _to_array(arr):
-    """Copy an unsigned integer array into an array('H'/'I'/'L') without an
-    intermediate bytes object."""
+    """NumPy unsigned int array → stdlib array('H'/'I'/'L')."""
     out = array({2: "H", 4: "I", 8: "L"}[arr.dtype.itemsize])
     out.frombytes(memoryview(np.ascontiguousarray(arr)).cast("B"))
     return out
 
 
 def load_model(path):
-    """@returns (nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output);
-    tk_nextmove holds the distinct DFA rows and tk_row maps state -> row;
-    tk_output = one feature index per state (-1 = none)"""
-    # stream the LZMA out to a temp file so the (uncompressed) npz never has to
-    # be resident, then take one array at a time. TemporaryFile leaves nothing
-    # behind even if the process is killed outright (a SIGTERM never unwinds
-    # `finally`) and, unlike dropping an open fd's name, works on Windows
+    """Load npz+LZMA model → (nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output)."""
+    # stream LZMA to a temp file so the uncompressed npz is never fully resident
     with tempfile.TemporaryFile(suffix=".npz") as tmp:
         with lzma.open(path) as src:
             shutil.copyfileobj(src, tmp, length=1 << 20)

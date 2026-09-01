@@ -1,24 +1,4 @@
-"""
-shards.py -
-Per-(domain, lang) n-gram count shards.
-
-One tokenization pass produces, per (domain, lang) directory, a
-term -> document frequency dict (see doc_ngrams). Feature selection is
-algebra over these shards, so a corpus edit only retokenizes the
-directories it touches. The NB parameters come separately from
-feature_counts, which credits one longest match per byte position.
-
-Selection takes two passes: merge_docfreq tallies globally to pick the
-candidate pool, count_matrices then projects the shards onto it, yielding
-everything the IG stage needs.
-
-A shard is two marshal objects, key header then docfreq payload. The key
-hashes the docs' (filename, size, mtime) -- so it is location-independent
--- plus the tokenization constants, and reuse needs exact equality: no
-payload is read under settings other than the ones that wrote it.
-
-Aggregations reduce integer partials, exact under any worker scheduling.
-"""
+"""Per-(domain, lang) n-gram document-frequency shards with content-based caching."""
 
 import hashlib
 import marshal
@@ -41,27 +21,17 @@ from .common import (
     shared,
 )
 
-# small chunks keep each worker's partial Counter small (one chunk per job
-# grew a near-global Counter in every worker: 8.7 -> 4.7 GB peak)
 MERGE_SHARDS_PER_CHUNK = 8
-
-# document frequencies, bounded by docs per class (~10^3); int32 halves the
-# count matrices, which every worker allocates in full and ships back
 COUNT_DTYPE = np.int32
 
 
 def doc_ngrams(data, max_order):
-    """Distinct terms one doc contributes: byte n-grams of order
-    MIN_NGRAM_ORDER..max_order, plus the CJK codepoint bigrams at
-    TOKENIZE_ORDER. That this order carries *only* CJK bigrams is enforced
-    by ngram_select, not here."""
+    """Distinct byte n-grams in a doc, plus CJK codepoint bigrams."""
     terms = set()
     n = len(data)
     for i in range(n):
         for k in range(MIN_NGRAM_ORDER, min(max_order, n - i) + 1):
             terms.add(data[i:i + k])
-        # only 3+3 bytes can pass is_cjk_bigram, and a codepoint >= U+2E80
-        # has lead byte >= 0xE2: two comparisons skip almost every position
         if i + TOKENIZE_ORDER <= n \
                 and data[i] >= 0xE2 and data[i + 3] >= 0xE2:
             term = data[i:i + TOKENIZE_ORDER]
@@ -71,7 +41,7 @@ def doc_ngrams(data, max_order):
 
 
 def group_items(items):
-    """Group (domain, lang, path) triples by (domain, lang), sorted."""
+    """Group by (domain, lang), sorted."""
     groups = defaultdict(list)
     for domain, lang, path in items:
         groups[(domain, lang)].append(path)
@@ -79,9 +49,7 @@ def group_items(items):
 
 
 def _group_key(paths):
-    """Cache key: the docs' (filename, size, mtime) plus everything that
-    changes what doc_ngrams emits, so editing a tokenization constant
-    invalidates the cache."""
+    """Cache key from doc metadata + tokenization constants."""
     h = hashlib.sha256()
     h.update(f"{MIN_NGRAM_ORDER}\0{MAX_NGRAM_ORDER}\0{TOKENIZE_ORDER}\0"
              f"{DOC_CAP}\0".encode())
@@ -92,9 +60,7 @@ def _group_key(paths):
 
 
 def _build_shard(arg):
-    """Build one shard unless a valid cached one exists.
-    @returns (shard_path, built)
-    """
+    """Build one shard or reuse cached. Returns (shard_path, built)."""
     shard_path, key, paths = arg
     try:
         with open(shard_path, 'rb') as f:
@@ -116,11 +82,7 @@ def _build_shard(arg):
 
 
 def build_shards(items, shard_dir, jobs=None):
-    """Build (or reuse cached) shards for all (domain, lang) groups.
-
-    @param items (domain, lang, path) triples with string names
-    @returns list of (domain, lang, shard_path), sorted by (domain, lang)
-    """
+    """Build/reuse cached shards. Returns [(domain, lang, shard_path), ...]."""
     os.makedirs(shard_dir, exist_ok=True)
     tasks = []
     shard_items = []
@@ -136,7 +98,7 @@ def build_shards(items, shard_dir, jobs=None):
 
 
 def load_shard(shard_path):
-    """@returns the term -> document frequency dict of a shard."""
+    """Load term → document frequency dict."""
     with open(shard_path, 'rb') as f:
         marshal.load(f)
         return marshal.load(f)
@@ -150,7 +112,7 @@ def _merge_chunk(chunk):
 
 
 def merge_docfreq(shard_items, jobs=None):
-    """Global term -> document frequency over all shards."""
+    """Global term → document frequency."""
     doc_count = Counter()
     with MapPool(jobs) as f:
         for partial in f(_merge_chunk,
@@ -160,12 +122,7 @@ def merge_docfreq(shard_items, jobs=None):
 
 
 def _select_counts(counts, feat_index):
-    """Intersect a shard count dict with a feature index, iterating the
-    smaller of the two.
-    @returns (row indices, counts) with unique indices
-    """
-    # a shard may share no feature with the pool (e.g. a lang whose docs are
-    # all empty); the arrays keep `+=` typed rather than inferring float64
+    """Intersect shard counts with feature index. Returns (indices, counts)."""
     idx, vals = [], []
     if len(counts) < len(feat_index):
         for feat, count in counts.items():
@@ -183,8 +140,6 @@ def _select_counts(counts, feat_index):
 
 
 def _zero_matrices(nf, nl, nd):
-    """count_matrices' accumulators; shared with the workers so the dtypes
-    cannot drift apart."""
     return (np.zeros((nf, nl), dtype=COUNT_DTYPE),
             np.zeros((nf, nd), dtype=COUNT_DTYPE),
             np.zeros((nf, nl), dtype=np.int8))
@@ -199,16 +154,12 @@ def _matrices_chunk(chunk):
         j = lang_index[lang]
         cm_lang[idx, j] += vals
         cm_domain[idx, domain_index[domain]] += vals
-        # one shard = one (domain, lang) dir, so presence is a per-shard flag
         domcount[idx, j] += 1
     return cm_lang, cm_domain, domcount
 
 
 def count_matrices(shard_items, features, lang_index, domain_index, jobs=None):
-    """Everything the IG stage needs, in one pass over the shards.
-    @returns (term x lang docfreq, term x domain docfreq, term x lang count
-        of domains the term occurs in); the matrix rows follow `features`
-    """
+    """Returns (lang counts, domain counts, domain-presence) matrices."""
     feat_index = {f: i for i, f in enumerate(features)}
     cm_lang, cm_domain, domcount = _zero_matrices(
         len(features), len(lang_index), len(domain_index))

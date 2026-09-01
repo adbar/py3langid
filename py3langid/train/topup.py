@@ -1,11 +1,4 @@
-"""Generic top-up sources for thin classes (see TRAINING.md).
-
-Classes below TOPUP_MIN_DOCS docs or TOPUP_MIN_DOMAINS domains pull from
-GlotCC / Glot500 / UDHR, capped like any other domain.
-Surplus docs are kept in OUTPUT_extra/ and reused on re-gathers.
-
-    python -m py3langid.train.gather_data --output corpusN --domains topup
-"""
+"""Top-up thin classes from GlotCC / Glot500 / UDHR (see TRAINING.md)."""
 
 import itertools
 import re
@@ -30,10 +23,7 @@ GLOT500_REPO = "cis-lmu/Glot500"
 UDHR_CSV = Path("raw_downloads/udhr/udhr-lid.csv")
 TOPUP_MIN_DOCS = 600
 TOPUP_MIN_DOMAINS = 2
-# script pick where a source offers several scripts for one class: the
-# split-script halves come from CLASS_SCRIPT, these are the rest
 GLOT_SCRIPT = {**CLASS_SCRIPT, "crh": "Latn", "gom": "Deva"}
-# source iso3 where it differs from our Tatoeba-oriented ISO3
 GLOT_ISO3 = {"uz": "uzn"}
 
 _CONFIG_RE = re.compile(r"^[a-z]{3}([-_])[A-Z][a-z]{3}$")
@@ -45,7 +35,7 @@ def _class_iso3(cls):
 
 
 def _grouped(rows, target=2000):
-    """Rows >= MIN_DOC become docs; smaller rows are packed into ~target-byte docs."""
+    """Pack small rows into ~target-byte docs; large rows pass through."""
     buf, size = [], 0
     for row in rows:
         raw = row.encode("utf-8") if isinstance(row, str) else row
@@ -64,13 +54,12 @@ def _grouped(rows, target=2000):
 def _write_topup(out_dir, rows, max_docs, cls, extra_dir=None):
     keep = script_filter(cls)
     docs = (d for d in valid_docs(_grouped(rows)) if keep is None or keep(d))
-    # bound consumption: junk-heavy streams must not be drained to the end
     docs = itertools.islice(docs, max_docs * 5)
     if out_dir.is_dir() and any(out_dir.glob("*.txt")):
         n = sum(1 for _ in itertools.islice(docs, max_docs))  # skip past primary
     else:
         n = write_docs(out_dir, docs, max_docs)
-    if extra_dir is not None:  # surplus kept for later re-gathers
+    if extra_dir is not None:
         extra_dir.mkdir(parents=True, exist_ok=True)
         for i, d in enumerate(docs):
             (extra_dir / f"doc{i:04d}.txt").write_bytes(d)
@@ -153,7 +142,7 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
             classes.append(SPLIT_SCRIPT[lang].alt)
 
     def needy():
-        "Classes short on docs or domains. Walks the corpus; hold the result."
+        """Classes below TOPUP_MIN_DOCS or TOPUP_MIN_DOMAINS."""
         counts = class_counts(out_root)
         return [c for c in classes
                 if sum(counts[c].values()) < TOPUP_MIN_DOCS
@@ -167,7 +156,6 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
         configs = _repo_configs(repo)
         one = partial(_topup_class, out_root, extra_root, repo, source, field,
                       configs, max_docs)
-        # revisit already-gathered classes too, to harvest their extras
         gathered = ([p.name for p in (out_root / source).iterdir() if p.is_dir()]
                     if (out_root / source).is_dir() else [])
         with ThreadPoolExecutor(jobs) as pool:
@@ -175,4 +163,4 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
         thin = needy()  # this repo just wrote docs
     if thin:
         gather_udhr(out_root, thin, max_docs)
-    print(f"topup done; still thin: {needy()}")
+    print(f"topup done; still thin: {thin}")

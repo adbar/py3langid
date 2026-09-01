@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-This file bundles language identification functions.
-
-Modifications (fork): Copyright (c) 2021, Adrien Barbaresi.
-
-Original code: Copyright (c) 2011 Marco Lui <saffsd@gmail.com>.
-Based on research by Marco Lui and Tim Baldwin.
-
-See LICENSE file for more info.
-"""
+"""Language identification (fork of langid.py by Marco Lui)."""
 
 import logging
 import math
@@ -26,13 +17,10 @@ LOGGER = logging.getLogger(__name__)
 IDENTIFIER = None
 MODEL_FILE = 'data/model.npz.xz'
 MODEL_DIR = Path(__file__).parent
-# raw-scale score for input with no features: finite (JSON-safe) yet far
-# below any real log-probability, so it never wins an argmax or a threshold
-RAW_FLOOR = float(np.finfo(np.float32).min)
+RAW_FLOOR = float(np.finfo(np.float32).min)  # finite floor for featureless input
 
 
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
-    """Load an identifier: external model if given, else the bundled one."""
     if model_path:
         identifier = LanguageIdentifier.from_modelpath(model_path, norm_probs=norm_probs)
         LOGGER.info("Using external model: %s", model_path)
@@ -44,7 +32,6 @@ def _load_identifier(model_path=None, norm_probs=False, langs=None):
 
 
 def _get_identifier():
-    """Return the global identifier, loading the default model if needed."""
     global IDENTIFIER
     if IDENTIFIER is None:
         LOGGER.debug('initializing identifier')
@@ -53,22 +40,18 @@ def _get_identifier():
 
 
 def set_languages(langs=None):
-    """Set the language subset used by the global identifier."""
     return _get_identifier().set_languages(langs)
 
 
 def classify(instance):
-    """Classify a text string, returning (language, confidence)."""
     return _get_identifier().classify(instance)
 
 
 def rank(instance):
-    """Rank all languages by likelihood, returning [(language, confidence), ...]."""
     return _get_identifier().rank(instance)
 
 
 def _init_worker(model_path, norm_probs, langs):
-    # spawned Pool workers get a fresh module: rebuild the parent's identifier
     global IDENTIFIER
     IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
 
@@ -95,7 +78,6 @@ class LanguageIdentifier:
 
     @classmethod
     def from_model_file(cls, model_file, *args, **kwargs):
-        "Load a model in npz+LZMA layout (relative paths resolve to the package)."
         filepath = Path(model_file)
         if not filepath.is_absolute():
             filepath = MODEL_DIR / filepath
@@ -105,12 +87,10 @@ class LanguageIdentifier:
 
     @classmethod
     def from_modelpath(cls, path, *args, **kwargs):
-        "Load a model from an arbitrary path (npz+LZMA is the only layout)."
         return cls.from_model_file(Path(path).absolute(), *args, **kwargs)
 
     def __init__(self, nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output,
                  norm_probs=False, min_confidence=None, *, tk_row):
-        # abstention: classify() returns ("und", conf) below this confidence
         if min_confidence is not None and not norm_probs:
             raise ValueError("min_confidence requires norm_probs=True")
         self.min_confidence = min_confidence
@@ -118,11 +98,8 @@ class LanguageIdentifier:
         self.nb_pc = nb_pc
         self.nb_classes = nb_classes
         self.tk_nextmove = tk_nextmove
-        # state -> row of the deduplicated transition table
         self.tk_row = tk_row
-        # the walk's row offsets, pre-shifted: one list lookup per byte
-        # instead of a lookup plus a shift (measured -6% per call for 3 MB)
-        self._rowbase = [r << 8 for r in tk_row]
+        self._rowbase = [r << 8 for r in tk_row]  # pre-shifted row offsets
         self.tk_output = tk_output
         self._norm_probs = norm_probs
         self._full_model = nb_ptc, nb_pc, nb_classes
@@ -133,6 +110,7 @@ class LanguageIdentifier:
         return list(dict.fromkeys(self.nb_classes))
 
     def set_languages(self, langs=None):
+        """Restrict classification to *langs* (ISO 639 codes), or reset to all."""
         LOGGER.debug("restricting languages to: %s", langs)
         nb_ptc, nb_pc, nb_classes = self._full_model
         if langs is None:
@@ -151,12 +129,8 @@ class LanguageIdentifier:
     @staticmethod
     def _encode(text):
         if isinstance(text, bytes):
-            # decode so case normalization applies uniformly to str and bytes.
-            # a byte read can stop mid-codepoint -- 22% of corpus byte
-            # positions are continuation bytes -- so retry without the partial
-            # tail, as train.common.nfc_bytes does. Reaching the str branch at
-            # all is what matters: bailing out here also skipped the lower()
-            # below, costing 23 pp on all-caps input (measured, held-out WiLI).
+            # decode to str for uniform case normalization; trim partial
+            # trailing codepoint (as train.common.nfc_bytes does)
             for trim in range(4):
                 chunk = text[:len(text) - trim] if trim else text
                 try:
@@ -167,23 +141,18 @@ class LanguageIdentifier:
         if isinstance(text, str):
             if text.isupper():
                 text = text.lower()
-            # NFC, as the training corpus (train.common.nfc_bytes)
             text = unicodedata.normalize('NFC', text)
             text = text.encode('utf8', errors='surrogatepass')
         return text
 
     def _sparse_score(self, visits, table):
-        "NB score from a sparse {row: count} map over `table`'s rows."
+        """NB log-posterior from sparse {feature: count}."""
         idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
         counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
-        # sublinear TF: models are trained for log1p'd counts. `table` is
-        # float16 in shipped models; matmul promotes it to float32 exactly,
-        # so there is nothing to gain from upcasting the whole table.
         return np.log1p(counts) @ table[idx] + self.nb_pc
 
     def _raw_score(self, text):
-        "Raw NB scores for encoded bytes."
-        # DFA walk: each state emits the one longest feature ending there
+        """Raw NB scores via DFA walk over encoded bytes."""
         state, indexes = 0, []
         nm, rowbase, out = self.tk_nextmove, self._rowbase, self.tk_output
         append = indexes.append
@@ -196,32 +165,23 @@ class LanguageIdentifier:
         if indexes:
             return self._sparse_score(Counter(indexes), self.nb_ptc)
 
-        # no features: a flat floor. Under norm_probs that is 0.0, giving a
-        # uniform distribution so min_confidence abstains. On the raw scale
-        # 0.0 would outrank every real (negative) score, so floor at
-        # RAW_FLOOR -- finite, keeping the server's JSON valid under
-        # allow_nan=False, but below anything the scorer can emit.
+        # no features: 0.0 under norm_probs (uniform → abstain), RAW_FLOOR otherwise
         fill = 0.0 if self._norm_probs else RAW_FLOOR
         return np.full(len(self.nb_classes), fill, dtype=np.float32)
 
     def _decide(self, text):
-        "Shared by classify() and rank(): one normalized score per class column."
+        """Score per class, optionally normalized to probabilities."""
         text = self._encode(text)
         scores = self._raw_score(text)
         if self._norm_probs:
-            # T = sqrt(bytes): score noise grows ~sqrt(n), keeping the softmax
-            # calibrated at every length without fitted constants. math.sqrt,
-            # not np.sqrt: a numpy scalar would widen the vector to float64
-            # (measured -5% per call). _raw_score always returns a fresh
-            # array, so the softmax runs in place.
+            # T = sqrt(bytes) keeps softmax calibrated across lengths
             scores *= 1.0 / math.sqrt(len(text) or 1)
             np.exp(scores - scores.max(), out=scores)
             scores /= scores.sum()
         return scores
 
     def classify(self, text):
-        # no per-label collapse first: a label's score is the best of its
-        # columns, so the best column's label is the best label
+        """Return *(language, confidence)* for *text* (str or UTF-8 bytes)."""
         scores = self._decide(text)
         i = int(scores.argmax())
         conf = float(scores[i])
@@ -230,11 +190,7 @@ class LanguageIdentifier:
         return self.nb_classes[i], conf
 
     def rank(self, text):
-        """Languages by likelihood, best first, one entry per label.
-
-        Shares classify()'s decision, so rank()[0] == classify() unless
-        min_confidence abstains.
-        """
+        """All languages by likelihood, best first, one entry per label."""
         ranked = sorted(zip(self.nb_classes, self._decide(text).tolist()),
                         key=itemgetter(1), reverse=True)
         best = {}
@@ -256,9 +212,9 @@ def main():
     parser.add_argument('-m', dest='model', help='load model from file')
     parser.add_argument('-l', '--langs', help='comma-separated set of target ISO639 language codes (e.g en,de)')
     parser.add_argument('-r', '--remote', action='store_true', help='auto-detect IP address for remote access')
-    parser.add_argument('-b', '--batch', action='store_true', help='specify a list of files on the command line')
+    parser.add_argument('-b', '--batch', action='store_true', help='read file paths from stdin and classify in parallel')
     parser.add_argument('-d', '--dist', action='store_true', help='show full distribution over languages')
-    parser.add_argument('-u', '--url', help='langid of URL')
+    parser.add_argument('-u', '--url', help='classify text from URL')
     parser.add_argument('--line', action='store_true', help='process pipes line-by-line rather than as a document')
     parser.add_argument('-n', '--normalize', action='store_true', help='normalize confidence scores to probability values')
     options = parser.parse_args()
@@ -317,7 +273,6 @@ def main():
                  if p and Path(p).is_file()]
 
         writer = csv.writer(sys.stdout, lineterminator='\n')
-        # one model copy per worker: never spawn more workers than files
         with Pool(processes=max(1, min(cpu_count(), len(paths))),
                   initializer=_init_worker,
                   initargs=(options.model, options.normalize, langs)) as pool:
@@ -333,7 +288,6 @@ def main():
                     writer.writerow((path, lang, conf))
     else:
         if sys.stdin.isatty():
-            # Interactive mode
             while True:
                 try:
                     print(">>>", end=' ')
@@ -342,7 +296,6 @@ def main():
                     break
                 print(_process(text))
         else:
-            # Redirected
             if options.line:
                 for line in sys.stdin:
                     print(_process(line))

@@ -1,10 +1,4 @@
-"""Exact line dedup: remove repeated lines (>= MIN_LINE bytes) per language,
-cross-domain, first occurrence kept. Deterministic (sorted traversal) and
-idempotent. Measured accuracy-neutral; kept for signal hygiene — duplicate
-boilerplate inflates document frequencies.
-
-    python -m py3langid.train.dedup CORPUS_DIR
-"""
+"""Cross-domain exact line dedup per language (first occurrence kept)."""
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -15,11 +9,10 @@ MIN_LINE = 60
 
 
 def dedup(corpus):
-    """@returns (lines removed, docs rewritten)."""
+    """Returns (lines_removed, docs_rewritten)."""
     seen = defaultdict(set)
     removed = touched = 0
     docs_by_lang = defaultdict(list)
-    # zxx is generated deterministically — leave it byte-exact
     for _domain, lang, path in walk_corpus(corpus, skip_langs=("zxx",)):
         docs_by_lang[lang].append(Path(path))
     for lang, docs in docs_by_lang.items():
