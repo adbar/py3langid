@@ -1,6 +1,6 @@
 # https://pip.pypa.io/en/stable/reference/build-system/pyproject-toml/
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -52,7 +52,7 @@ packages = ["py3langid"]
 version = {attr = "py3langid.__version__"}
 
 [tool.setuptools.package-data]
-py3langid = ["data/model.plzma"]
+py3langid = ["data/model.npz.xz"]
 
 [project.scripts]
 langid = "py3langid.langid:main"

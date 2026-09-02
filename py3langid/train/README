@@ -1,16 +1,23 @@
-Refactoring of the langid.py training tools, to allow for
-more flexibility and easier experimentation. 
+Training pipeline for py3langid models.
 
-Planned tools:
-1) index.py  - index a corpus. Produce a list of file, corpus, language pairs.
-2) tokenize.py - take an index and tokenize the corresponding files
-3) DFfeatureselect.py - choose features by document frequency
-3) IGweight.py - compute the IG weights for language and for domain
-4) LDfeatureselect.py - take the IG weights and use them to select a feature set
-5) scanner.py - build a scanner on the basis of a feature set
-6) NBtrain.py - learn NB parameters using an indexed corpus and a scanner
+Everything runs through two commands:
 
-Optional:
-A single tool that integrates all steps, calling on each submodule as required.
+1) gather_data.py - download a multi-domain corpus (tatoeba, cc100, wiki,
+   leipzig; language code tables in sources.py); raw downloads are kept
+   in raw_downloads/ and reused. topup.py adds generic sources (GlotCC,
+   Glot500, GlotSparse, UDHR) for thin classes via --domains topup.
+     python -m py3langid.train.gather_data --output corpusN
+2) train.py - single integrated trainer: index -> per-(domain,lang) n-gram
+   count shards (cached) -> DF feature selection -> IG weights (lang+domain)
+   -> LD feature selection -> scanner -> NB parameters -> model.npz.xz.
+     python -m py3langid.train.train -m MODEL_DIR corpusN
 
-Marco Lui, January 2013
+Supporting modules (used as libraries by train.py):
+  stages.py (indexing, feature selection, IG, NB parameters),
+  shards.py, scanner.py, common.py
+
+verify.py - corpus cleaning: classify training docs with a trusted model,
+move mismatched docs (or strip mismatched paragraphs with --paragraphs).
+  python -m py3langid.train.verify --model MODEL_FILE corpusN
+
+Originally a refactoring of the langid.py training tools by Marco Lui (2013).
