@@ -14,9 +14,9 @@ Changes in this fork
 
 Execution speed has been improved and the code base has been modernized for Python 3.10+:
 
-- Import: Loading the package (``import py3langid``) is about 30% faster
-- Startup: Loading the default classification model is 25-30x faster
-- Execution: Language detection with ``langid.classify`` is 5-6x faster on paragraphs (less on longer texts)
+- Import: Loading the package (``import py3langid``) is about 25% faster
+- Execution: Language detection with ``langid.classify`` is 10x faster on single sentences and 3-4x faster on paragraphs (less on longer texts, about 1.4x at 100 kB)
+- Startup: Loading the default classification model is 2-3x faster, with a model six times larger
 
 For implementation details see this blog post: `How to make language detection with langid.py faster <https://adrien.barbaresi.eu/blog/language-detection-langid-py-faster.html>`_.
 

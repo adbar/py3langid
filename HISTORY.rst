@@ -7,15 +7,17 @@ History
 
 * New model: 139 languages + ``zxx`` (was 97)
 * Reproducible training pipeline (``py3langid.train``)
-* ``min_confidence`` option: return ``und`` below threshold
-* Length-calibrated confidence normalization
-* Input normalized as in training (NFC)
-* Faster inference
-* Breaking: ``nb`` merged into ``no``; ``set_languages(["nb"])`` raises
-* Breaking: ``npz``+LZMA is the only model format (pickle removed)
-* Breaking: WSGI moved to ``py3langid.server:application``
-* Breaking: invalid ``-m`` path raises instead of silent fallback
-* Breaking: ``--dist`` CSV gained a ``language`` column
+* Faster inference; input NFC-normalized as in training
+* Length-calibrated confidence normalization, with ``min_confidence``
+  to return ``und`` below a threshold
+
+Breaking:
+
+* ``nb`` merged into ``no``; ``set_languages(["nb"])`` raises
+* ``npz``\ +LZMA is the only model format (pickle removed)
+* WSGI moved to ``py3langid.server:application``
+* invalid ``-m`` path raises instead of silent fallback
+* ``--dist`` CSV gained a ``language`` column
 
 0.3.0
 -----

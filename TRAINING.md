@@ -4,7 +4,7 @@ The pipeline follows Lui & Baldwin (2011): a multi-domain corpus, LD
 feature selection (per-language information gain minus domain information
 gain), and Multinomial Naive Bayes over byte n-grams. Training is
 deterministic — the same corpus and settings reproduce the model byte for
-byte. Timings below are from an 11-core, 36 GB laptop.
+byte.
 
 The `py3langid.train` package ships in the repository, not in the PyPI
 wheel, so run the commands below from a clone:
@@ -43,8 +43,7 @@ pipeline's one doc byte budget — gathering, tokenization, the verifier and
 The last three are top-up sources: `topup.py` fills classes that fall
 below 600 docs or 2 domains from GlotCC, Glot500, GlotSparse and, as a last
 resort, UDHR; they are not gathered for every language. Two classes (`sdh`,
-`uzs`) exist only in GlotSparse, so `--domains` must include `topup` for a
-corpus that covers every shipped label.
+`uzs`) exist only in GlotSparse.
 
 Classes: 139 languages + `zxx` (synthetic not-a-language) + two internal
 script-split classes = 142 NB classes / 140 public labels. A language
@@ -59,14 +58,16 @@ Adding a split language is one `SplitScript` entry in `common.py`.
 python -m py3langid.train.gather_data \
     --output corpus \
     --langs af,am,...,zu                  # default: model languages
-    --domains tatoeba,cc100,wiki,leipzig  # 'topup' fills thin classes
+    --domains tatoeba,cc100,wiki,leipzig  # add 'topup' to fill thin classes
     --max-docs-per-lang 300
     --sentences-per-doc 50
     --jobs 4
 ```
 
-Downloads are cached in `raw_downloads/` and re-gathers resume where they
-stopped.
+`topup` is not in the default domain list, so pass `--domains` explicitly
+for a corpus that covers every shipped label. Downloads are cached in
+`raw_downloads/` and re-gathers resume where they stopped. Run the stages
+below in order on the result, then evaluate before adopting the model.
 
 ## Corpus hygiene
 
@@ -94,8 +95,9 @@ strips foreign paragraphs in place instead of dropping docs.
 python -m py3langid.train.train -m model_dir corpus
 ```
 
-Bare defaults reproduce the release config, byte for byte. Warm run ~57s
-at `-j 10`, cold ~29s more for tokenization.
+Bare defaults reproduce the release config, byte for byte. A run with a
+warm shard cache takes about a minute at `-j 10`; a cold one adds the
+tokenization pass.
 
 `--feats_per_lang` is the only sweep knob as a flag. Tokenization
 constants live in `common.py` (`MIN_NGRAM_ORDER`, `MAX_NGRAM_ORDER`,
@@ -115,14 +117,11 @@ How it works:
 - Confusable clusters (`CLUSTERS` in `common.py`) each add 150 features
   by cluster-restricted IG. Change them only with a full re-evaluation.
 - Class priors are `log(per-class doc counts)`, no smoothing knobs.
-
-## Longest-match emission
-
-The compiled Aho-Corasick scanner emits only the **longest** matching
-feature at each byte position (`out_feat` in the model), avoiding
-duplicate votes from nested n-grams. NB numerators are counted by a
-scanner pass over the corpus (`feature_counts`) that runs the runtime's
-own walk, so training counts exactly what classification accumulates.
+- The compiled Aho-Corasick scanner emits only the **longest** matching
+  feature at each byte position (`out_feat` in the model), avoiding
+  duplicate votes from nested n-grams. NB numerators come from a scanner
+  pass over the corpus (`feature_counts`) that runs the runtime's own walk,
+  so training counts exactly what classification accumulates.
 
 ## Evaluation
 
@@ -141,20 +140,3 @@ licensed separately. The split used for this model:
 Shipped model: **WiLI 95.51 / OpenLID 94.55**, 140 labels, 100,053
 features, 4.6 MB. The pre-fork langid.py model scores 91.21/88.41 on the
 same harnesses.
-
-## Quick recipe
-
-End-to-end from scratch (assuming the previous release model as verifier);
-evaluate the result on the dev sets above before adopting it:
-
-```bash
-# 1. gather (topup is not in the default domain list)
-python -m py3langid.train.gather_data --output corpus --jobs 4 \
-    --domains tatoeba,cc100,wiki,leipzig,topup
-# 2. hygiene
-python -m py3langid.train.zxx corpus
-python -m py3langid.train.dedup corpus
-python -m py3langid.train.verify --model old_model/model.npz.xz corpus
-# 3. train
-python -m py3langid.train.train -m model_out corpus
-```
