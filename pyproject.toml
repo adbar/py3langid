@@ -68,7 +68,3 @@ dev = [
     "pytest",
     "pytest-cov",
 ]
-# benchmarks/ only, not needed by the test suite
-bench = [
-    "scipy",  # fast_eval.py: sparse feature matrices
-]

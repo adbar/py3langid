@@ -13,8 +13,13 @@ import numpy as np
 import pytest
 
 import py3langid as langid
-from py3langid.langid import (MODEL_DIR, MODEL_FILE, RAW_FLOOR,
-                              LanguageIdentifier, _load_identifier)
+from py3langid.langid import (
+    MODEL_DIR,
+    MODEL_FILE,
+    RAW_FLOOR,
+    LanguageIdentifier,
+    _load_identifier,
+)
 
 
 # a model load costs ~0.25s: share one per variant, undoing set_languages,

@@ -22,10 +22,11 @@ from .sources import ISO3
 
 GLOTCC_REPO = "cis-lmu/GlotCC-V1"
 GLOT500_REPO = "cis-lmu/Glot500"
+GLOTSPARSE_REPO = "cis-lmu/GlotSparse"
 UDHR_CSV = Path("raw_downloads/udhr/udhr-lid.csv")
 TOPUP_MIN_DOCS = 600
 GLOT_SCRIPT = {**CLASS_SCRIPT, "crh": "Latn", "gom": "Deva"}
-GLOT_ISO3 = {"uz": "uzn"}
+GLOT_ISO3 = {"uz": "uzn", "sdh": "sdh"}
 
 _CONFIG_RE = re.compile(r"^[a-z]{3}([-_])[A-Z][a-z]{3}$")
 
@@ -159,7 +160,8 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
     thin = needy()
     print(f"topup: {len(thin)} thin classes: {thin}")
     for repo, source, field in ((GLOTCC_REPO, "glotcc", "content"),
-                                (GLOT500_REPO, "glot500", "text")):
+                                (GLOT500_REPO, "glot500", "text"),
+                                (GLOTSPARSE_REPO, "glotsparse", "Content")):
         configs = _repo_configs(repo)
         one = partial(_topup_class, out_root, extra_root, repo, source, field,
                       configs, max_docs)

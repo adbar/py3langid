@@ -108,6 +108,7 @@ ENV/
 corpus/
 corpus.shards/
 corpus_extra/
+corpus_dropped/
 raw_downloads/
 model_out/
 archive/

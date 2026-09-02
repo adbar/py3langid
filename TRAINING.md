@@ -41,7 +41,10 @@ pipeline's one doc byte budget — gathering, tokenization, the verifier and
 | glotsparse  | GlotSparse (topup)        |    600 | web            |
 
 The last three are top-up sources: `topup.py` fills classes that fall
-below 600 docs or 2 domains, they are not gathered for every language.
+below 600 docs or 2 domains from GlotCC, Glot500, GlotSparse and, as a last
+resort, UDHR; they are not gathered for every language. Two classes (`sdh`,
+`uzs`) exist only in GlotSparse, so `--domains` must include `topup` for a
+corpus that covers every shipped label.
 
 Classes: 139 languages + `zxx` (synthetic not-a-language) + two internal
 script-split classes = 142 NB classes / 140 public labels. A language
@@ -123,11 +126,13 @@ own walk, so training counts exactly what classification accumulates.
 
 ## Evaluation
 
-- Dev (tuned on): `bench_wili.py` (WiLI-2018) and `bench_openlid.py`
-  (OpenLID). Checked-in baseline JSONs track the shipped model; runs
-  print per-language deltas, `--save-baseline` re-snapshots.
-- Held-out (run once per adoption): `bench_flores.py` (FLORES-200) and
-  `bench_commonlid.py` (CommonLID, noisy-register web text — decides ties).
+The eval harness is not part of the repository; the datasets are large and
+licensed separately. The split used for this model:
+
+- Dev (tuned on): WiLI-2018 and OpenLID, scored against a stored baseline
+  per language so a run reports deltas rather than absolute numbers.
+- Held-out (run once per adoption): FLORES-200 and CommonLID
+  (noisy-register web text — decides ties).
 - Caveats: dev sets are formal register; some confusable pairs (bs/hr
   especially) are genuinely multi-valid with an intrinsic accuracy ceiling.
 
@@ -135,23 +140,21 @@ own walk, so training counts exactly what classification accumulates.
 
 Shipped model: **WiLI 95.51 / OpenLID 94.55**, 140 labels, 100,053
 features, 4.6 MB. The pre-fork langid.py model scores 91.21/88.41 on the
-same harnesses. Sweep logs: `model_out/sweep_results.tsv` and
-`model_out/sweep25_results.tsv`.
+same harnesses.
 
 ## Quick recipe
 
-End-to-end from scratch (assuming the previous release model as verifier):
+End-to-end from scratch (assuming the previous release model as verifier);
+evaluate the result on the dev sets above before adopting it:
 
 ```bash
-# 1. gather
-python -m py3langid.train.gather_data --output corpus --jobs 4
+# 1. gather (topup is not in the default domain list)
+python -m py3langid.train.gather_data --output corpus --jobs 4 \
+    --domains tatoeba,cc100,wiki,leipzig,topup
 # 2. hygiene
 python -m py3langid.train.zxx corpus
 python -m py3langid.train.dedup corpus
 python -m py3langid.train.verify --model old_model/model.npz.xz corpus
 # 3. train
 python -m py3langid.train.train -m model_out corpus
-# 4. evaluate
-python benchmarks/bench_wili.py --model model_out/model.npz.xz
-python benchmarks/bench_openlid.py --model model_out/model.npz.xz
 ```

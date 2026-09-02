@@ -1,0 +1,3 @@
+# the test suite and the training package are repository-only, not released
+prune tests
+prune py3langid/train

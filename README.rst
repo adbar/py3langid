@@ -47,13 +47,13 @@ With Python
     >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
     >>> identifier.set_languages(['de', 'en', 'fr'])
     >>> identifier.classify('This should be enough text.')
-    ('en', 0.9944351)
+    ('en', 0.9999628)
 
     # abstention: return ('und', confidence) below a threshold
     >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True,
     ...                                                 min_confidence=0.2)
     >>> identifier.classify('ok')
-    ('und', 0.0070422)
+    ('und', 0.0140845)
 
 Input can be ``str`` or UTF-8 ``bytes``; input is NFC-normalized before
 classification, and all-uppercase text is case-folded.
@@ -66,7 +66,7 @@ On the command-line
 
     # basic usage with probability normalization
     $ echo "This should be enough text." | langid -n
-    ('en', 0.9935993)
+    ('en', 0.9935992)
 
     # define a subset of target languages
     $ echo "This won't be recognized properly." | langid -n -l fr,it,tr

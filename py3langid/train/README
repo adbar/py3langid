@@ -5,7 +5,7 @@ Everything runs through two commands:
 1) gather_data.py - download a multi-domain corpus (tatoeba, cc100, wiki,
    leipzig; language code tables in sources.py); raw downloads are kept
    in raw_downloads/ and reused. topup.py adds generic sources (GlotCC,
-   Glot500, UDHR) for thin classes via --domains topup.
+   Glot500, GlotSparse, UDHR) for thin classes via --domains topup.
      python -m py3langid.train.gather_data --output corpusN
 2) train.py - single integrated trainer: index -> per-(domain,lang) n-gram
    count shards (cached) -> DF feature selection -> IG weights (lang+domain)
@@ -19,8 +19,5 @@ Supporting modules (used as libraries by train.py):
 verify.py - corpus cleaning: classify training docs with a trusted model,
 move mismatched docs (or strip mismatched paragraphs with --paragraphs).
   python -m py3langid.train.verify --model MODEL_FILE corpusN
-
-The full release recipe (verify -> calibrated train -> benchmark) is driven
-by benchmarks/finalize.py; see TRAINING.md.
 
 Originally a refactoring of the langid.py training tools by Marco Lui (2013).
