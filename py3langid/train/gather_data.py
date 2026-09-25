@@ -174,7 +174,7 @@ def write_manifest(out_root, info):
         with open(p, "rb") as f:
             while chunk := f.read(1 << 20):
                 h.update(chunk)
-        raw[str(p.relative_to(RAW_CACHE))] = {"size": p.stat().st_size, "sha256": h.hexdigest()}
+        raw[p.relative_to(RAW_CACHE).as_posix()] = {"size": p.stat().st_size, "sha256": h.hexdigest()}
     runs = old.get("runs", []) + [{**info, "version": __version__}]
     path.write_text(json.dumps({"runs": runs, "raw": raw}, indent=1) + "\n", "utf-8")
 
