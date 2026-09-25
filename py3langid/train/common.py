@@ -95,7 +95,7 @@ def drop(corpus, paths):
         src = Path(p)
         dst = dropped_root / src.relative_to(corpus)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        src.rename(dst)
+        src.replace(dst)
 
 
 def job_chunks(seq, jobs):
