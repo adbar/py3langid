@@ -7,32 +7,18 @@ from collections import Counter
 
 import numpy as np
 
-from ..modelio import save_model
-from .common import (
-    CLUSTER_K,
-    CLUSTERS,
-    FEATURES_PER_LANG,
-    LABEL_ALIAS,
-    MIN_DOMAINS,
-)
+from ..modelio import Model, save_model
+from .common import ALT_CLASS, COUNT_FLOOR, FEATURES_PER_LANG, walk_corpus
 from .scanner import build_scanner
 from .shards import build_shards, count_matrices, merge_docfreq
-from .stages import (
-    cluster_features,
-    compute_IG,
-    feature_counts,
-    index_corpus,
-    ld_weights,
-    ngram_select,
-    select_LD_features,
-)
+from .stages import compute_IG, feature_counts, ngram_select, select_LD_features
+from .words import build_words
 
 
-def _axis(names, values):
-    """Returns (count array, name→column index) in names order."""
+def _axis(values):
+    """(names in first-appearance order, count array, name→column) of *values*."""
     counts = Counter(values)
-    return (np.array([counts[name] for name in names]),
-            {name: i for i, name in enumerate(names)})
+    return list(counts), np.array(list(counts.values())), {n: i for i, n in enumerate(counts)}
 
 
 def main(argv=None):
@@ -55,9 +41,9 @@ def main(argv=None):
     print("corpus path:", args.corpus)
     print("model path:", model_dir)
 
-    items, langs, domains = index_corpus(args.corpus)
-    lang_dist, lang_index = _axis(langs, (lang for _, lang, _ in items))
-    domain_dist, domain_index = _axis(domains, (d for d, _, _ in items))
+    items = list(walk_corpus(args.corpus))
+    langs, lang_dist, lang_index = _axis(lang for _, lang, _ in items)
+    domains, domain_dist, domain_index = _axis(d for d, _, _ in items)
 
     def _summary(names, dist):
         return f"({len(names)}): " + ' '.join(
@@ -77,7 +63,7 @@ def main(argv=None):
     del doc_count
     print(f"selected {len(features)} DF features")
 
-    cm_lang, cm_domain, domcount = count_matrices(
+    cm_lang, cm_domain = count_matrices(
         shard_items, features, lang_index, domain_index, args.jobs)
 
     nonempty = cm_lang.any(0)
@@ -88,15 +74,7 @@ def main(argv=None):
 
     print("computing information gain")
     domain_ig = compute_IG(cm_domain, domain_dist)
-    shards_per_lang = Counter(lang for _, lang, _ in shard_items)
-    need = np.array([min(MIN_DOMAINS, shards_per_lang[lang]) for lang in langs])
-    present = domcount >= need[None, :]
-    LDidx = select_LD_features(ld_weights(cm_lang, lang_dist, domain_ig),
-                               args.feats_per_lang, present)
-    extra = cluster_features(cm_lang, lang_dist, lang_index, features, LDidx,
-                             CLUSTERS, CLUSTER_K)
-    print(f"added {len(extra)} cluster features")
-    LDidx |= extra
+    LDidx = select_LD_features(cm_lang, lang_dist, domain_ig, args.feats_per_lang)
     LDfeats = sorted(features[i] for i in LDidx)
     print(f'selected {len(LDfeats)} features')
 
@@ -105,15 +83,19 @@ def main(argv=None):
     print(f"scanner: {len(tk_output)} states, {emitting} emitting, "
           f"{len(tk_nextmove) // 256} distinct transition rows")
 
-    nb_classes = [LABEL_ALIAS.get(lang, lang) for lang in langs]
+    nb_classes = [ALT_CLASS.get(lang, lang) for lang in langs]
     nb_pc = np.log(lang_dist)
 
     print("counting longest-match feature occurrences")
     prod = feature_counts(items, tk_nextmove, tk_row, tk_output, len(LDfeats),
                           lang_index, args.jobs)
+    prod[prod <= COUNT_FLOOR] = 0  # thin evidence is noise and bulk
     nb_ptc = np.log(1.0 + prod) - np.log(len(LDfeats) + prod.sum(0))  # add-one smoothed
 
-    model = nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output
+    words = build_words(shard_items, lang_index)
+    print(f"word table: {len(words.indptr) - 1} tokens, {len(words.cols)} entries")
+
+    model = Model(nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output, words)
     npz_path = os.path.join(model_dir, 'model.npz.xz')
     save_model(npz_path, model)
     print(f"wrote model to {npz_path} ({os.path.getsize(npz_path)} bytes)")

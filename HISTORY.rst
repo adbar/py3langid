@@ -2,6 +2,29 @@
 History
 =======
 
+0.5.0 (unreleased)
+------------------
+
+* New model: 2-word inputs +8 to +9 points (WiLI, OpenLID), CommonLID +2.3,
+  7.2 MB (was 4.6)
+* Token table: per-language word and CJK character credits for short input
+* Chinese trained as two script classes folded into ``zh``
+* Input lowercased and space-padded, as in training
+* Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
+* Training: one command gathers and cleans the corpus and writes
+  ``MANIFEST.json``
+* Training: model-free cleaning (``clean``), ``verify`` removed
+* Training: cleaner sources (wiki article leads, fewer topup sources, no
+  FLORES-200 rows, pinned dataset revisions)
+
+Breaking:
+
+* ``LanguageIdentifier`` takes a ``modelio.Model``. ``nb_ptc``, ``nb_pc``
+  and ``nb_classes`` removed (use ``labels``)
+* 0.4.0 models rejected, retrain with ``py3langid.train.train``
+* ``modelio.expand_nextmove`` and CLI ``-u/--url``, ``-r/--remote`` removed
+* ``sdh`` dropped (138 languages)
+
 0.4.0
 -----
 
@@ -18,6 +41,8 @@ Breaking:
 * WSGI moved to ``py3langid.server:application``
 * invalid ``-m`` path raises instead of silent fallback
 * ``--dist`` CSV gained a ``language`` column
+* ``cl_path``/``rank_path`` removed, module-level and on
+  ``LanguageIdentifier`` (read the file and call ``classify``/``rank``)
 
 0.3.0
 -----

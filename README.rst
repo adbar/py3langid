@@ -5,6 +5,12 @@
 
 ``py3langid`` is a fork of the standalone language identification tool ``langid.py`` by Marco Lui.
 
+It is a Naive Bayes classifier:
+
+- Byte n-gram features are selected by distinctiveness
+- Input bytes are scanned with a DFA to count features
+- Scoring is a single matrix product against per-class log probabilities
+
 Original license: BSD-2-Clause. Fork license: BSD-3-Clause.
 
 
@@ -20,8 +26,10 @@ Execution speed has been improved and the code base has been modernized for Pyth
 
 For implementation details see this blog post: `How to make language detection with langid.py faster <https://adrien.barbaresi.eu/blog/language-detection-langid-py-faster.html>`_.
 
-The fork also ships a retrained model covering **139 languages** (up from 97)
+The fork also ships a retrained model covering **138 languages** (up from 97)
 and a fully rewritten, reproducible training pipeline (see `Training a model`_).
+It ranks first on the test set of `CommonLID <https://github.com/commoncrawl/commonlid-eval>`_,
+a language identification benchmark built from Common Crawl web text.
 
 For version history see the `changelog <https://github.com/adbar/py3langid/blob/master/HISTORY.rst>`_.
 
@@ -44,19 +52,19 @@ With Python
     >>> langid.rank('This text is in English.')   # all languages, most likely first
 
     >>> from py3langid.langid import LanguageIdentifier, MODEL_FILE
-    >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
+    >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True)
     >>> identifier.set_languages(['de', 'en', 'fr'])
     >>> identifier.classify('This should be enough text.')
     ('en', 0.9999628)
 
     # abstention: return ('und', confidence) below a threshold
-    >>> identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True,
-    ...                                                 min_confidence=0.2)
+    >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True,
+    ...                                                min_confidence=0.2)
     >>> identifier.classify('ok')
     ('und', 0.0140845)
 
 Input can be ``str`` or UTF-8 ``bytes``; input is NFC-normalized before
-classification, and all-uppercase text is case-folded.
+classification and lowercased.
 
 
 On the command-line
@@ -74,14 +82,14 @@ On the command-line
 
 Run ``langid`` without input to get an interactive prompt, pipe text into it
 to classify a whole document, or add ``--line`` to classify each line
-separately. ``langid -u URL`` downloads and classifies a web page. See
+separately. See
 ``langid --help`` for all options.
 
 
 Languages
 ---------
 
-The shipped model knows 139 languages plus ``zxx`` (ISO 639 codes)::
+The shipped model knows 138 languages plus ``zxx`` (ISO 639 codes)::
 
     ace, af, am, an, ar, ary, arz, as, az, ba, bcl, be, bg, bn, br, bs, ca,
     crh, cs, cy, da, de, dz, el, en, eo, es, et, eu, ext, fa, fi, fo, fr,
@@ -89,9 +97,9 @@ The shipped model knows 139 languages plus ``zxx`` (ISO 639 codes)::
     hr, ht, hu, hy, id, ig, is, it, ja, jv, ka, kab, kik, kk, km, kn, ko,
     ku, ky, la, lb, lg, lij, ln, lo, lt, ltg, lv, mg, mk, ml, mn, mr, ms,
     mt, my, ne, nl, nn, no, nso, oc, om, or, pa, pcm, pl, ps, pt, qu, ro,
-    ru, rw, sa, sdh, se, si, sk, sl, sn, so, sq, sr, st, sv, sw, ta, te, tg,
-    th, tk, tl, tr, tt, ug, uk, ur, uz, uzs, vec, vi, vo, wa, wuu, xh, yo,
-    yue, zh, zu, zxx
+    ru, rw, sa, se, si, sk, sl, sn, so, sq, sr, st, sv, sw, ta, te, tg, th,
+    tk, tl, tr, tt, ug, uk, ur, uz, uzs, vec, vi, vo, wa, wuu, xh, yo, yue,
+    zh, zu, zxx
 
 ``zxx`` is a synthetic "not a language" class that catches numbers, markup,
 identifiers, and similar non-linguistic content. With ``min_confidence``

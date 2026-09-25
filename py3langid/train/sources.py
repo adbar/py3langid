@@ -1,6 +1,6 @@
 """Per-source language code tables for the corpus gatherers."""
 
-# Tatoeba ISO 639-3 codes per target lang; missing/uncertain codes yield 0 docs and are logged.
+# The gathered languages, with ISO 639-3 codes for Tatoeba and topup.
 ISO3 = {
     "af": "afr", "am": "amh", "an": "arg", "ar": "ara", "as": "asm", "az": "aze",
     "arz": "arz", "ary": "ary",
@@ -39,7 +39,7 @@ ISO3 = {
     "fuv": "fuv", "gcr": "gcr", "gom": "gom", "grc": "grc",
     "gug": "gug", "guw": "guw", "hbo": "hbo", "kik": "kik",
 }
-CC100_CODE = {"zh": "zh-Hans"}
+CC100_CODE = {"zh": "zh-Hans", "zht": "zh-Hant"}  # zht: Traditional class of zh
 # cc100 has no data for: tt, ba, vec, tk, sn, st, nso, kab, crh
 # nb is not gathered: it duplicated 'no' (Bokmål) and the two classes split
 # the same language arbitrarily. Tatoeba nob feeds 'no' (decision 2026-08-26).

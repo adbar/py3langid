@@ -3,6 +3,8 @@
 
 import logging
 import math
+import re
+import sys
 import unicodedata
 from collections import Counter
 from operator import itemgetter
@@ -10,19 +12,19 @@ from pathlib import Path
 
 import numpy as np
 
-from .modelio import load_model as _load_model_file
+from .modelio import load_model
 
 LOGGER = logging.getLogger(__name__)
 
 IDENTIFIER = None
-MODEL_FILE = 'data/model.npz.xz'
 MODEL_DIR = Path(__file__).parent
+MODEL_FILE = MODEL_DIR / 'data/model.npz.xz'
 RAW_FLOOR = float(np.finfo(np.float32).min)  # finite floor for featureless input
 
 
 def decode_trimmed(data):
     """Decode UTF-8, trimming ≤3 partial trailing bytes; None if undecodable.
-    Shared train/inference contract (also used by train.common.nfc_bytes)."""
+    Shared train/inference contract (normalize)."""
     for trim in range(4):
         chunk = data[:len(data) - trim] if trim else data
         try:
@@ -33,8 +35,25 @@ def decode_trimmed(data):
     return None
 
 
+def normalize(text):
+    """(lowercased NFC UTF-8 bytes, str) of *text*; undecodable bytes pass through.
+    Shared train/inference contract (train.common.read_doc)."""
+    if isinstance(text, bytes):
+        decoded = decode_trimmed(text)
+        if decoded is None:
+            return text, text.decode('utf8', errors='replace')
+        text = decoded
+    text = unicodedata.normalize('NFC', text.lower())
+    return text.encode('utf8', errors='surrogatepass'), text
+
+
+_CJK = r"\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF"  # one token per character
+CJK_RE = re.compile(f"[{_CJK}]")
+TOKEN_RE = re.compile(f"[{_CJK}]|[^\\W\\d_{_CJK}]+")
+
+
 def visit_counts(nm, rowbase, out, text):
-    """DFA-walk feature counts over bytes; None if none.
+    """DFA-walk feature counts over bytes.
     Shared by inference (_raw_score) and training (train.stages)."""
     state, indexes = 0, []
     append = indexes.append
@@ -43,25 +62,23 @@ def visit_counts(nm, rowbase, out, text):
         f = out[state]
         if f >= 0:
             append(f)
-    return Counter(indexes) if indexes else None
+    return Counter(indexes)
 
 
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
-    if model_path:
-        identifier = LanguageIdentifier.from_modelpath(model_path, norm_probs=norm_probs)
-        LOGGER.info("Using external model: %s", model_path)
-    else:
-        identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=norm_probs)
+    identifier = LanguageIdentifier.from_modelpath(model_path or MODEL_FILE, norm_probs=norm_probs)
     if langs:
         identifier.set_languages(langs)
     return identifier
 
 
-def _get_identifier():
+def _get_identifier(model_path=None, norm_probs=False, langs=None):
+    """Module identifier, loaded on first use (also the batch pool initializer:
+    forked workers inherit the parent's, spawned ones load their own)."""
     global IDENTIFIER
     if IDENTIFIER is None:
         LOGGER.debug('initializing identifier')
-        IDENTIFIER = _load_identifier()
+        IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
     return IDENTIFIER
 
 
@@ -77,12 +94,6 @@ def rank(instance):
     return _get_identifier().rank(instance)
 
 
-def _init_worker(model_path, norm_probs, langs):
-    global IDENTIFIER
-    if IDENTIFIER is None:  # forked workers inherit the parent's identifier
-        IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
-
-
 def _process_file(path, dist=False):
     with open(path, 'rb') as f:
         text = f.read()
@@ -90,131 +101,95 @@ def _process_file(path, dist=False):
 
 
 class LanguageIdentifier:
-    __slots__ = [
-        '_alias_pairs',
-        '_full_model',
-        '_norm_probs',
-        '_rowbase',
-        'min_confidence',
-        'nb_classes',
-        'nb_pc',
-        'nb_ptc',
-        'tk_nextmove',
-        'tk_output',
-        'tk_row',
-    ]
-
-    @classmethod
-    def from_model_file(cls, model_file, *args, **kwargs):
-        filepath = Path(model_file)
-        if not filepath.is_absolute():
-            filepath = MODEL_DIR / filepath
-        ptc, pc, classes, nextmove, row, output = _load_model_file(filepath)
-        return cls(np.asarray(ptc), np.asarray(pc), classes, nextmove, output,
-                   *args, tk_row=row, **kwargs)
+    __slots__ = ['_all_labels', '_dupes', '_first', '_model', '_norm_probs',
+                 '_rowbase', '_sel', '_words', 'labels', 'min_confidence']
 
     @classmethod
     def from_modelpath(cls, path, *args, **kwargs):
-        return cls.from_model_file(Path(path).absolute(), *args, **kwargs)
+        return cls(load_model(path), *args, **kwargs)
 
-    def __init__(self, nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_output,
-                 norm_probs=False, min_confidence=None, *, tk_row):
+    @classmethod
+    def from_model_file(cls, model_file, *args, **kwargs):
+        """0.4.0 API: relative to the package directory."""
+        return cls.from_modelpath(MODEL_DIR / model_file, *args, **kwargs)
+
+    def __init__(self, model, norm_probs=False, min_confidence=None):
         if min_confidence is not None and not norm_probs:
             raise ValueError("min_confidence requires norm_probs=True")
         self.min_confidence = min_confidence
-        self.nb_ptc = nb_ptc
-        self.nb_pc = nb_pc
-        self.nb_classes = nb_classes
-        self.tk_nextmove = tk_nextmove
-        self.tk_row = tk_row
-        self._rowbase = [r << 8 for r in tk_row]  # pre-shifted row offsets
-        self.tk_output = tk_output
+        self._model = model
+        w = model.words
+        index = {tok: i for i, tok in enumerate(w.vocab.decode('utf8').split('\n'))}
+        self._words = (index, w.indptr, w.cols, w.vals)
+        self._rowbase = [r << 8 for r in model.row]  # pre-shifted row offsets
         self._norm_probs = norm_probs
-        self._full_model = nb_ptc, nb_pc, nb_classes
-        self._set_alias_pairs()
-
-    def _set_alias_pairs(self):
-        """(first, dupe) column pairs for labels appearing more than once."""
-        first, pairs = {}, []
-        for i, c in enumerate(self.nb_classes):
-            if c in first:
-                pairs.append((first[c], i))
-            else:
-                first[c] = i
-        self._alias_pairs = pairs
-
-    @property
-    def labels(self):
-        "Distinct output labels; script aliases (srl->sr) share one."
-        return list(dict.fromkeys(self.nb_classes))
+        groups = {}  # label -> columns
+        for i, c in enumerate(model.classes):
+            groups.setdefault(c, []).append(i)
+        self._all_labels = list(groups)
+        self._first = np.array([g[0] for g in groups.values()])
+        self._dupes = [(k, j) for k, g in enumerate(groups.values()) for j in g[1:]]
+        self.set_languages(None)
 
     def set_languages(self, langs=None):
         """Restrict classification to *langs* (ISO 639 codes), or reset to all."""
         LOGGER.debug("restricting languages to: %s", langs)
-        nb_ptc, nb_pc, nb_classes = self._full_model
         if langs is None:
-            self.nb_classes, self.nb_ptc, self.nb_pc = nb_classes, nb_ptc, nb_pc
+            self.labels, self._sel = self._all_labels, None
         else:
-            lang_set = set(langs)
-            unknown = lang_set - set(nb_classes)
+            if not langs:
+                raise ValueError("Empty language selection")
+            wanted = set(langs)
+            unknown = wanted - set(self._all_labels)
             if unknown:
                 raise ValueError(f"Unknown language code(s): {unknown}")
-
-            indices = [i for i, c in enumerate(nb_classes) if c in lang_set]
-            self.nb_classes = [nb_classes[i] for i in indices]
-            self.nb_ptc = nb_ptc[:, indices]
-            self.nb_pc = nb_pc[indices]
-        self._set_alias_pairs()
-
-    @staticmethod
-    def _encode(text):
-        if isinstance(text, bytes):
-            decoded = decode_trimmed(text)
-            if decoded is not None:
-                text = decoded
-        if isinstance(text, str):
-            if text.isupper():
-                text = text.lower()
-            text = unicodedata.normalize('NFC', text)
-            text = text.encode('utf8', errors='surrogatepass')
-        return text
-
-    def _sparse_score(self, visits, table):
-        """NB log-posterior from sparse {feature: count}."""
-        idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
-        counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
-        return np.log1p(counts) @ table[idx] + self.nb_pc
+            self._sel = np.array([i for i, c in enumerate(self._all_labels) if c in wanted])
+            self.labels = [self._all_labels[i] for i in self._sel]
 
     def _raw_score(self, text):
-        """Raw NB scores via DFA walk over encoded bytes."""
-        visits = visit_counts(self.tk_nextmove, self._rowbase, self.tk_output,
-                              text)
-        if visits:
-            return self._sparse_score(visits, self.nb_ptc)
+        """NB log-posterior from the DFA walk's sparse feature counts, None if featureless."""
+        visits = visit_counts(self._model.nextmove, self._rowbase, self._model.output, text)
+        if not visits:
+            return None
+        idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
+        counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
+        return np.log1p(counts) @ self._model.ptc[idx] + self._model.pc
 
-        # no features: 0.0 under norm_probs (uniform → abstain), RAW_FLOOR otherwise
-        fill = 0.0 if self._norm_probs else RAW_FLOOR
-        return np.full(len(self.nb_classes), fill, dtype=np.float32)
+    def _word_credit(self, decoded):
+        """Summed table credits over the distinct known tokens, per column."""
+        index, indptr, cols, vals = self._words
+        rows = {index[w] for w in TOKEN_RE.findall(decoded) if w in index}
+        if not rows:
+            return None
+        spans = [slice(indptr[r], indptr[r + 1]) for r in rows]
+        return np.bincount(np.concatenate([cols[s] for s in spans]),
+                           weights=np.concatenate([vals[s] for s in spans]),
+                           minlength=len(self._model.pc))
 
     def _decide(self, text):
-        """Score per class, optionally normalized to probabilities."""
-        text = self._encode(text)
+        """Scores in self.labels order, probabilities under norm_probs."""
+        data, decoded = normalize(text)
+        text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input
         scores = self._raw_score(text)
+        credit = self._word_credit(decoded)
+        if scores is None:  # featureless: uniform under norm_probs, RAW_FLOOR otherwise
+            if self._norm_probs and credit is None:
+                return np.full(len(self.labels), 1 / len(self.labels), dtype=np.float32)
+            scores = np.full(len(self._model.pc), 0.0 if self._norm_probs else RAW_FLOOR,
+                             dtype=np.float32)
+        if credit is not None:
+            scores += credit
         if self._norm_probs:
-            # T = sqrt(bytes) keeps softmax calibrated across lengths
-            scores *= 1.0 / math.sqrt(len(text) or 1)
-            np.exp(scores - scores.max(), out=scores)
-            scores /= scores.sum()
-        # aliased columns (srl->sr): fold the dupe into the first occurrence and
-        # mask it, so argmax and rank agree on one score per label
-        for i, j in self._alias_pairs:
-            if self._norm_probs:
-                scores[i] += scores[j]
-                scores[j] = 0.0
-            else:
-                scores[i] = max(scores[i], scores[j])
-                scores[j] = RAW_FLOOR
-        return scores
+            scores *= 1.0 / math.sqrt(len(text))  # T = sqrt(bytes)
+        out = scores[self._first]  # aliased label: best column, or summed as probability
+        for k, j in self._dupes:
+            out[k] = np.logaddexp(out[k], scores[j]) if self._norm_probs else max(out[k], scores[j])
+        if self._sel is not None:
+            out = out[self._sel]
+        if self._norm_probs:
+            np.exp(out - out.max(), out=out)
+            out /= out.sum()
+        return out
 
     def classify(self, text):
         """Return *(language, confidence)* for *text* (str or UTF-8 bytes)."""
@@ -223,20 +198,15 @@ class LanguageIdentifier:
         conf = float(scores[i])
         if self.min_confidence is not None and conf < self.min_confidence:
             return 'und', conf
-        return self.nb_classes[i], conf
+        return self.labels[i], conf
 
     def rank(self, text):
-        """All languages by likelihood, best first, one entry per label."""
-        merged = {}
-        for lang, score in zip(self.nb_classes, self._decide(text).tolist()):
-            merged.setdefault(lang, score)  # first column holds the merged score
-        return sorted(merged.items(), key=itemgetter(1), reverse=True)
+        """All languages by likelihood, best first."""
+        return sorted(zip(self.labels, self._decide(text).tolist()), key=itemgetter(1), reverse=True)
 
 
-def main():
-
+def _build_parser():
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--serve', action='store_true', help='launch web service')
@@ -245,100 +215,100 @@ def main():
     parser.add_argument('-v', action='count', dest='verbosity', help='increase verbosity (repeat for greater effect)')
     parser.add_argument('-m', dest='model', help='load model from file')
     parser.add_argument('-l', '--langs', help='comma-separated set of target ISO639 language codes (e.g en,de)')
-    parser.add_argument('-r', '--remote', action='store_true', help='auto-detect IP address for remote access')
     parser.add_argument('-b', '--batch', action='store_true', help='read file paths from stdin and classify in parallel')
     parser.add_argument('-d', '--dist', action='store_true', help='show full distribution over languages')
-    parser.add_argument('-u', '--url', help='classify text from URL')
     parser.add_argument('--line', action='store_true', help='process pipes line-by-line rather than as a document')
     parser.add_argument('-n', '--normalize', action='store_true', help='normalize confidence scores to probability values')
-    options = parser.parse_args()
+    return parser
+
+
+def _run_serve(host, port):
+    """Serve the WSGI app until interrupted."""
+    import socket
+    from wsgiref.simple_server import make_server
+
+    from .server import application
+
+    hostname = host or socket.gethostbyname(socket.gethostname())
+    print(f"Listening on {hostname}:{port}")
+    print("Press Ctrl+C to exit")
+    httpd = make_server(hostname, port, application)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def _stdin_paths():
+    """Existing file paths, one per stdin line."""
+    for line in sys.stdin:
+        path = line.strip()
+        if path and Path(path).is_file():
+            yield path
+
+
+def _run_batch(identifier, options):
+    """Classify the file paths on stdin in parallel, as CSV on stdout."""
+    import csv
+    import multiprocessing as mp
+    from functools import partial
+
+    writer = csv.writer(sys.stdout, lineterminator='\n')
+    ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
+    with ctx.Pool(processes=mp.cpu_count(),
+                  initializer=_get_identifier,
+                  initargs=(options.model, options.normalize, identifier.labels)) as pool:
+        if options.dist:
+            header = identifier.labels
+            writer.writerow(['path', 'language'] + header)
+            for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), _stdin_paths()):
+                scores = dict(ranking)
+                writer.writerow([path, ranking[0][0]] + [scores[c] for c in header])
+        else:
+            for path, (lang, conf) in pool.imap_unordered(_process_file, _stdin_paths()):
+                writer.writerow((path, lang, conf))
+
+
+def _run_stdin(process, line_mode):
+    """Interactive prompt on a tty, otherwise classify piped input."""
+    if sys.stdin.isatty():
+        while True:
+            try:
+                print(">>>", end=' ')
+                text = input()
+            except (KeyboardInterrupt, EOFError):
+                break
+            print(process(text))
+    elif line_mode:
+        for line in sys.stdin:
+            print(process(line))
+    else:
+        print(process(sys.stdin.read()))
+
+
+def main(argv=None):
+    global IDENTIFIER
+
+    parser = _build_parser()
+    options = parser.parse_args(argv)
 
     if options.verbosity:
-        logging.basicConfig(level=max((5-options.verbosity)*10, 0))
+        logging.basicConfig(level=max((5 - options.verbosity) * 10, 0))
     else:
         logging.basicConfig()
 
     if options.batch and options.serve:
         parser.error("cannot specify both batch and serve at the same time")
 
-    global IDENTIFIER
-
     langs = options.langs.split(",") if options.langs else None
     IDENTIFIER = _load_identifier(options.model, options.normalize, langs)
 
-    _process = IDENTIFIER.rank if options.dist else IDENTIFIER.classify
-
-    if options.url:
-        from urllib.request import urlopen
-        with urlopen(options.url) as url:
-            text = url.read()
-            output = _process(text)
-            print(options.url, len(text), output)
-
-    elif options.serve:
-        import socket
-        from wsgiref.simple_server import make_server
-
-        from .server import application
-
-        if options.remote and options.host is None:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("google.com", 80))
-                hostname = s.getsockname()[0]
-        elif options.host is None:
-            hostname = socket.gethostbyname(socket.gethostname())
-        else:
-            hostname = options.host
-
-        print(f"Listening on {hostname}:{options.port}")
-        print("Press Ctrl+C to exit")
-        httpd = make_server(hostname, options.port, application)
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass
-
+    if options.serve:
+        _run_serve(options.host, options.port)
     elif options.batch:
-        import csv
-        import multiprocessing as mp
-        from functools import partial
-
-        def paths():
-            for line in sys.stdin:
-                p = line.strip()
-                if p and Path(p).is_file():
-                    yield p
-
-        writer = csv.writer(sys.stdout, lineterminator='\n')
-        ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
-        with ctx.Pool(processes=mp.cpu_count(),
-                      initializer=_init_worker,
-                      initargs=(options.model, options.normalize, langs)) as pool:
-            if options.dist:
-                header = IDENTIFIER.labels
-                writer.writerow(['path', 'language'] + header)
-                for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), paths()):
-                    scores = dict(ranking)
-                    row = [path, ranking[0][0]] + [scores[c] for c in header]
-                    writer.writerow(row)
-            else:
-                for path, (lang, conf) in pool.imap_unordered(_process_file, paths()):
-                    writer.writerow((path, lang, conf))
+        _run_batch(IDENTIFIER, options)
     else:
-        if sys.stdin.isatty():
-            while True:
-                try:
-                    print(">>>", end=' ')
-                    text = input()
-                except (KeyboardInterrupt, EOFError):
-                    break
-                print(_process(text))
-        else:
-            if options.line:
-                for line in sys.stdin:
-                    print(_process(line))
-            else:
-                print(_process(sys.stdin.read()))
+        _run_stdin(IDENTIFIER.rank if options.dist else IDENTIFIER.classify, options.line)
 
 
 if __name__ == "__main__":

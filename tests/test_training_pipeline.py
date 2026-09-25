@@ -84,7 +84,7 @@ def test_relabel(corpus_dir, tmp_path):
     model_dir = tmp_path / "model"
     main(["-m", str(model_dir), "-j", "1", "--feats_per_lang", "20",
           str(corpus_dir)])
-    classes = load_model(model_dir / "model.npz.xz")[2]
+    classes = load_model(model_dir / "model.npz.xz").classes
 
     assert "srl" not in classes
     assert classes.count("sr") == 2
