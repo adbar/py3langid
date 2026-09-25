@@ -281,7 +281,7 @@ def test_doc_rules_apply_at_write_time(tmp_path):
     msa, egy = "ذهب الرئيس إلى القاهرة. " * 30, "انا مش عايز اروح النهارده. " * 30
     docs = [d.encode() for d in (msa, egy, msa, egy + "١", egy + "٢")]
     assert write_docs(tmp_path / "arz", docs, max_docs=2) == 2
-    assert all("مش" in p.read_text() for p in (tmp_path / "arz").iterdir())
+    assert all("مش" in p.read_text("utf-8") for p in (tmp_path / "arz").iterdir())
 
 
 def test_manifest_records_raw_files_and_merges(tmp_path, monkeypatch):
@@ -303,15 +303,15 @@ def test_manifest_records_raw_files_and_merges(tmp_path, monkeypatch):
     argv = ["--output", str(tmp_path / "c"), "--langs", "de", "--domains", "tatoeba"]
     gather_data.main(argv)
     manifest = tmp_path / "c" / "MANIFEST.json"
-    m = json.loads(manifest.read_text())
+    m = json.loads(manifest.read_text("utf-8"))
     entry = m["raw"]["tatoeba/sentences.tar.bz2"]
     assert entry == {"size": len(buf.getvalue()), "sha256": hashlib.sha256(buf.getvalue()).hexdigest()}
     assert [r["langs"] for r in m["runs"]] == [["de"]] and "hf_revisions" not in m["runs"][0]
 
     m["raw"]["wiki/old.head"] = {"size": 1, "sha256": "0"}  # from an earlier gather
-    manifest.write_text(json.dumps(m))
+    manifest.write_text(json.dumps(m), "utf-8")
     gather_data.main([*argv[:3], "de,fr", *argv[4:]])
-    m = json.loads(manifest.read_text())
+    m = json.loads(manifest.read_text("utf-8"))
     assert set(m["raw"]) == {"tatoeba/sentences.tar.bz2", "wiki/old.head"}
     assert [r["langs"] for r in m["runs"]] == [["de"], ["de", "fr"]]
 
@@ -324,7 +324,7 @@ def test_gather_cleans_last_and_before_topup(tmp_path, monkeypatch, cleans):
     monkeypatch.setattr(topup, "gather_topup", lambda *a: cleans.append("topup"))
     gather_data.main(["--output", str(tmp_path), "--langs", "de", "--domains", "topup"])
     assert cleans == ["clean", "topup", "clean"]
-    assert json.loads((tmp_path / "MANIFEST.json").read_text())["runs"][0]["hf_revisions"] == topup.REVISION
+    assert json.loads((tmp_path / "MANIFEST.json").read_text("utf-8"))["runs"][0]["hf_revisions"] == topup.REVISION
     monkeypatch.setattr(gather_data, "cc100_docs", lambda lang: [])
     gather_data.main(["--output", str(tmp_path), "--langs", "de", "--domains", "cc100"])
     assert cleans[3:] == ["clean"]  # a re-run without topup still ends clean

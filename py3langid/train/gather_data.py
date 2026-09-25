@@ -167,7 +167,7 @@ def latest_cirrus_date():
 def write_manifest(out_root, info):
     """MANIFEST.json: settings of every gather run and the raw files read."""
     path = out_root / "MANIFEST.json"
-    old = json.loads(path.read_text()) if path.exists() else {}
+    old = json.loads(path.read_text("utf-8")) if path.exists() else {}
     raw = old.get("raw", {})
     for p in sorted(USED_RAW):
         h = hashlib.sha256()
@@ -176,7 +176,7 @@ def write_manifest(out_root, info):
                 h.update(chunk)
         raw[str(p.relative_to(RAW_CACHE))] = {"size": p.stat().st_size, "sha256": h.hexdigest()}
     runs = old.get("runs", []) + [{**info, "version": __version__}]
-    path.write_text(json.dumps({"runs": runs, "raw": raw}, indent=1) + "\n")
+    path.write_text(json.dumps({"runs": runs, "raw": raw}, indent=1) + "\n", "utf-8")
 
 
 def main(argv=None):
