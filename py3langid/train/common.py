@@ -1,41 +1,42 @@
 """Training pipeline constants and helpers."""
 
 import multiprocessing as mp
+import re
 import sys
-import unicodedata
-from collections.abc import Callable
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
-from typing import NamedTuple
 
-from ..langid import decode_trimmed
+from ..langid import normalize
 
 MAX_NGRAM_ORDER = 5
 MIN_NGRAM_ORDER = 2
 DF_TOKENS = 60000        # candidate pool per order
 FEATURES_PER_LANG = 1050 # per-language, not global (keeps script-novel langs viable)
-DOC_CAP = 3000           # byte budget: gathering, tokenization, verifier, zxx
+COUNT_FLOOR = 2          # NB counts at or below this are zeroed before smoothing
+DOC_CAP = 3000           # byte budget: gathering, tokenization, zxx
 MIN_DOC = 500
-MIN_DOMAINS = 2          # feature selection and topup both target this
+NORMALIZE_VERSION = 4    # bump when normalize or the shard payload changes
 
-CLUSTERS = (("ms", "id"), ("bs", "hr"), ("no", "nn", "da"),
-            ("zh", "yue", "wuu"))
-CLUSTER_K = 150  # extra features per cluster
-
-TOKENIZE_ORDER = 6  # CJK codepoint bigrams (3+3 bytes)
-SELECT_ORDERS = frozenset(range(MIN_NGRAM_ORDER, MAX_NGRAM_ORDER + 1)) \
-    | {TOKENIZE_ORDER}
+SENT_SPLIT = re.compile(r"(?<=[.!?])(?:\s+|(?=[　-鿿＀-￯]))|(?<=[。！？।])")
 
 
-def is_cjk_bigram(term):
-    """True if term is exactly two CJK codepoints (6 bytes)."""
-    if len(term) != TOKENIZE_ORDER:
-        return False
-    try:
-        s = term.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return len(s) == 2 and all(ord(ch) >= 0x2E80 for ch in s)
+# Traditional vs Simplified Chinese: 150 frequent, script-pure character pairs
+_TRAD = "為時來會個這過對發現開經還們當與說動間進實國關體沒點將內讓從樣機無長麼應業場種學兩問別給結題產網幾設帶數務變電認該計總覺話區資選強處記頭東達員報爲見箇氣單傳旹門據統專確髮論導滿風許備質觀萬視難標準類則調連約續較決運請夠費參規際卻愛邊辦線級驗歡轉創議領隨雖價術離顯師組裝書項識車樂買況聯團張獲優態熱節圖"
+_SIMP = "为时来会个这过对发现开经还们当与说动间进实国关体没点将内让从样机无长么应业场种学两问别给结题产网几设带数务变电认该计总觉话区资选强处记头东达员报为见个气单传时门据统专确发论导满风许备质观万视难标准类则调连约续较决运请够费参规际却爱边办线级验欢转创议领随虽价术离显师组装书项识车乐买况联团张获优态热节图"
+_HANT = frozenset(_TRAD)
+_HANS = frozenset(_SIMP)
+
+
+def hant_majority(doc):
+    """True if doc has more Traditional than Simplified marker characters."""
+    trad = simp = 0
+    for ch in doc.decode("utf-8", errors="surrogateescape"):
+        if ch in _HANT:
+            trad += 1
+        elif ch in _HANS:
+            simp += 1
+    return trad > simp
 
 
 def latin_majority(doc):
@@ -46,41 +47,19 @@ def latin_majority(doc):
     return lat > cyr
 
 
-class SplitScript(NamedTuple):
-    """A language trained as two script-specific classes."""
-    alt: str
-    script: str
-    alt_script: str
-    routes_to_alt: Callable
-
-
+# label -> (alt script class, predicate routing a doc there)
 SPLIT_SCRIPT = {
-    "sr": SplitScript("srl", "Cyrl", "Latn", latin_majority),
-    "uz": SplitScript("uzc", "Latn", "Cyrl", lambda doc: not latin_majority(doc)),
+    "sr": ("srl", latin_majority),
+    "uz": ("uzc", lambda doc: not latin_majority(doc)),
+    "zh": ("zht", hant_majority),
 }
-
-ALT_CLASS = {s.alt: lang for lang, s in SPLIT_SCRIPT.items()}
-LABEL_ALIAS = {**ALT_CLASS, "nb": "no"}
-CLASS_SCRIPT = {lang: s.script for lang, s in SPLIT_SCRIPT.items()}
-CLASS_SCRIPT.update({s.alt: s.alt_script for s in SPLIT_SCRIPT.values()})
+ALT_CLASS = {alt: lang for lang, (alt, _) in SPLIT_SCRIPT.items()}  # alt class -> label
 
 
-def route_script(out_dir, doc):
-    """Route doc to its alt class dir if split-script."""
-    spec = SPLIT_SCRIPT.get(out_dir.name)
-    if spec and spec.routes_to_alt(doc):
-        return out_dir.with_name(spec.alt)
-    return out_dir
-
-
-def script_filter(cls):
-    "Doc predicate for `cls`'s script, or None if `cls` is not split-script."
-    if cls in ALT_CLASS:
-        return SPLIT_SCRIPT[ALT_CLASS[cls]].routes_to_alt
-    if cls in SPLIT_SCRIPT:
-        routes_to_alt = SPLIT_SCRIPT[cls].routes_to_alt
-        return lambda doc: not routes_to_alt(doc)
-    return None
+def class_of(lang, doc):
+    """Training class of a doc labelled *lang*: the alt class when its script says so."""
+    spec = SPLIT_SCRIPT.get(lang)
+    return spec[0] if spec and spec[1](doc) else lang
 
 
 def walk_corpus(root, skip_langs=(), pattern="*.txt"):
@@ -94,18 +73,19 @@ def walk_corpus(root, skip_langs=(), pattern="*.txt"):
                     yield domain.name, lang_dir.name, str(doc)
 
 
-def nfc_bytes(data):
-    """NFC-normalize UTF-8 bytes, trimming partial trailing codepoints."""
-    text = decode_trimmed(data)
-    if text is None:
-        return data
-    return unicodedata.normalize("NFC", text).encode("utf-8")
-
-
 def read_doc(path, cap=0):
-    """Read NFC-normalized doc bytes, truncated to cap (0 = no cap)."""
+    """(bytes, str) of a doc as the identifier scores it, truncated to cap (0 = no cap)."""
     with open(path, "rb") as f:
-        return nfc_bytes(f.read(cap) if cap else f.read())
+        return normalize(f.read(cap) if cap else f.read())
+
+
+def cap_bytes(data, cap=DOC_CAP):
+    """Truncate to cap bytes on a codepoint boundary."""
+    if len(data) <= cap:
+        return data
+    while cap > 0 and (data[cap] & 0xC0) == 0x80:
+        cap -= 1
+    return data[:cap]
 
 
 def drop(corpus, paths):
@@ -118,45 +98,24 @@ def drop(corpus, paths):
         src.rename(dst)
 
 
-def job_count(processes=None):
-    """Resolve to concrete worker count (None = all cores)."""
-    return mp.cpu_count() if processes is None else max(1, processes)
-
-
-def chunks(seq, size):
-    """Split into chunks of at most size items."""
-    size = max(1, size)
+def job_chunks(seq, jobs):
+    """One contiguous chunk per job."""
+    size = max(1, -(-len(seq) // max(1, jobs)))
     return [seq[i:i + size] for i in range(0, len(seq), size)]
 
 
-def job_chunks(seq, jobs):
-    """One contiguous chunk per job."""
-    return chunks(seq, -(-len(seq) // job_count(jobs)))
-
-
-_SHARED = ()
-
-
-def set_shared(*args):
-    """MapPool initializer: stash per-worker constants."""
-    global _SHARED
-    _SHARED = args
-
-
-def shared():
-    return _SHARED
+def pmap_chunks(fn, tasks, jobs=1, shared=()):
+    """Yield fn(*shared, chunk) over one contiguous chunk of tasks per job."""
+    with MapPool(jobs) as f:
+        yield from f(partial(fn, *shared), job_chunks(tasks, jobs))
 
 
 @contextmanager
-def MapPool(processes=None, initializer=None, initargs=None, chunksize=1):
-    """Process pool that falls back to serial map when processes=1."""
-    processes = job_count(processes)
-
+def MapPool(processes=1):
+    """Process pool that falls back to serial map when processes <= 1."""
     if processes > 1:
         ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
-        with ctx.Pool(processes, initializer, initargs) as pool:
-            yield lambda fn, chunks: pool.imap_unordered(fn, chunks, chunksize)
+        with ctx.Pool(processes) as pool:
+            yield pool.imap_unordered
     else:
-        if initializer is not None:
-            initializer(*initargs)
         yield map

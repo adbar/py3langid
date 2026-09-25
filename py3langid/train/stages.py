@@ -1,4 +1,4 @@
-"""Corpus indexing, feature selection (DF/LD/IG), NB parameter estimation."""
+"""Feature selection (DF/LD/IG) and NB feature counts."""
 
 import heapq
 from collections import defaultdict
@@ -6,37 +6,14 @@ from collections import defaultdict
 import numpy as np
 
 from ..langid import visit_counts
-from .common import (
-    DF_TOKENS,
-    DOC_CAP,
-    SELECT_ORDERS,
-    MapPool,
-    job_chunks,
-    read_doc,
-    set_shared,
-    shared,
-    walk_corpus,
-)
+from .common import DF_TOKENS, DOC_CAP, pmap_chunks, read_doc
 
 
-def index_corpus(root):
-    """Returns (items, langs, domains) in first-appearance walk order."""
-    items = []
-    langs, domains = {}, {}
-    for domain, lang, path in walk_corpus(root):
-        langs.setdefault(lang, None)
-        domains.setdefault(domain, None)
-        items.append((domain, lang, path))
-    return items, list(langs), list(domains)
-
-
-def ngram_select(doc_count, tokens_per_order=DF_TOKENS, orders=SELECT_ORDERS):
-    """Top tokens_per_order terms by DF at each admissible order."""
+def ngram_select(doc_count, tokens_per_order=DF_TOKENS):
+    """Top tokens_per_order terms by DF at each order."""
     buckets = defaultdict(list)
     for term, count in doc_count.items():
-        order = len(term)
-        if order in orders:
-            buckets[order].append((count, term))
+        buckets[len(term)].append((count, term))
     features = set()
     for bucket in buckets.values():
         top = heapq.nsmallest(tokens_per_order, bucket,
@@ -95,48 +72,22 @@ def ld_weights(cm_lang, lang_dist, domain_ig):
             - domain_ig
 
 
-def select_LD_features(ld_columns, feats_per_lang, present):
-    """Top feats_per_lang per language by LD weight. Returns union of row indices."""
+def select_LD_features(cm_lang, lang_dist, domain_ig, feats_per_lang):
+    """Top feats_per_lang features per language by LD weight, among those present
+    in the language. Returns union of row indices."""
     if feats_per_lang < 1:
         raise ValueError("feats_per_lang must be >= 1")
     selected = set()
-    for j, lang_w in enumerate(ld_columns):
-        cand = np.flatnonzero(present[:, j])
-        selected.update(cand[np.argsort(lang_w[cand])[-feats_per_lang:]].tolist())
+    for j, weight in enumerate(ld_weights(cm_lang, lang_dist, domain_ig)):
+        cand = np.flatnonzero(cm_lang[:, j])
+        selected.update(cand[np.argsort(weight[cand])[-feats_per_lang:]].tolist())
     return selected
 
 
-_JUNK_BYTES = frozenset(
-    b"0123456789 \t\n\r\x0b\x0c"
-    b"!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
-
-
-def cluster_features(cm_lang, lang_dist, lang_index, feats, base, clusters, k):
-    """Top-k new features per confusable cluster by cluster-restricted IG."""
-    base = set(base)
-    selected = set(base)
-    for cluster in clusters:
-        if any(lang not in lang_index for lang in cluster):
-            continue
-        cols = [lang_index[lang] for lang in cluster]
-        ig = compute_IG(cm_lang[:, cols], lang_dist[cols])
-        taken = 0
-        for t in np.argsort(ig)[::-1]:
-            t = int(t)
-            if t in selected or all(b in _JUNK_BYTES for b in feats[t]):
-                continue
-            selected.add(t)
-            taken += 1
-            if taken >= k:
-                break
-    return selected - base
-
-
-def _feature_counts_chunk(chunk):
-    nm, rowbase, out, n_feats, num_langs = shared()
+def _feature_counts_chunk(nm, rowbase, out, n_feats, num_langs, chunk):
     counts = np.zeros((n_feats, num_langs), dtype=np.int64)
     for col, path in chunk:
-        visits = visit_counts(nm, rowbase, out, read_doc(path, DOC_CAP))
+        visits = visit_counts(nm, rowbase, out, read_doc(path, DOC_CAP)[0])
         if visits:
             counts[list(visits), col] += np.fromiter(
                 visits.values(), dtype=np.int64, count=len(visits))
@@ -144,14 +95,12 @@ def _feature_counts_chunk(chunk):
 
 
 def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
-                   jobs=None):
+                   jobs=1):
     """Per-(feature, lang) longest-match counts via DFA walk."""
     tasks = [(lang_index[lang], path) for _, lang, path in items]
     counts = np.zeros((n_feats, len(lang_index)), dtype=np.int64)
     rowbase = [r << 8 for r in tk_row]
-    with MapPool(jobs, set_shared,
-                 (tk_nextmove, rowbase, tk_output, n_feats,
-                  len(lang_index))) as f:
-        for partial in f(_feature_counts_chunk, job_chunks(tasks, jobs)):
-            counts += partial
+    for partial in pmap_chunks(_feature_counts_chunk, tasks, jobs,
+                               (tk_nextmove, rowbase, tk_output, n_feats, len(lang_index))):
+        counts += partial
     return counts
