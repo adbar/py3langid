@@ -5,6 +5,8 @@ import types
 from py3langid.train import topup
 from py3langid.train.common import MIN_DOC
 
+from .conftest import write_corpus
+
 
 def test_glot_docs_skips_eval_sources(monkeypatch):
     calls = []
@@ -33,14 +35,30 @@ def test_repo_configs_pinned(monkeypatch):
 
 
 def test_needy_counts_domains_with_enough_docs(tmp_path):
-    def cell(domain, cls, n):
-        (tmp_path / domain / cls).mkdir(parents=True)
-        for i in range(n):
-            (tmp_path / domain / cls / f"doc{i:04d}.txt").write_bytes(b"x")
-
-    for d in ("wiki", "cc100", "leipzig"):
-        cell(d, "de", 50)
-    cell("wiki", "arz", 300)
-    cell("tatoeba", "arz", 31)
-    cell("leipzig", "arz", 300)
+    cells = [("wiki", "de", 50), ("cc100", "de", 50), ("leipzig", "de", 50),
+             ("wiki", "arz", 300), ("tatoeba", "arz", 31), ("leipzig", "arz", 300)]
+    write_corpus(tmp_path, [(d, c, b"x") for d, c, n in cells for _ in range(n)])
     assert topup.needy(tmp_path, ["de", "arz", "pcm", "om"]) == ["arz", "om"]
+
+
+def test_topup_retries_failed_stream_only(monkeypatch, tmp_path):
+    streamed = []
+    fail = {"om"}
+
+    def glot_docs(repo, field, configs, cls):
+        streamed.append(cls)
+        for i in range(3):
+            yield f"{cls} doc {i} ".encode() * MIN_DOC
+        if cls in fail:
+            raise OSError("stream dropped")
+
+    monkeypatch.setattr(topup, "_repo_configs", lambda repo: {})
+    monkeypatch.setattr(topup, "_glot_docs", glot_docs)
+    topup.gather_topup(tmp_path, ["om", "so"], max_docs=5, jobs=1)
+    assert (tmp_path / "glotcc" / "om" / topup.PARTIAL).exists()
+    fail.clear()
+    streamed.clear()
+    topup.gather_topup(tmp_path, ["om", "so"], max_docs=5, jobs=1)
+    assert streamed == ["om"]
+    assert not (tmp_path / "glotcc" / "om" / topup.PARTIAL).exists()
+    assert len(list((tmp_path / "glotcc" / "om").glob("*.txt"))) == 3

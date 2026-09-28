@@ -13,6 +13,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+CREDIT_LEVELS = 63  # log-spaced word credit levels
+
 
 class WordTable(NamedTuple):
     """CSR token credits: row i of vocab holds (cols, vals) in indptr[i]:indptr[i+1]."""
@@ -60,7 +62,10 @@ def save_model(path, model):
         "out_feat": out_feat,
     }
     words = model.words
-    vals = np.asarray(words.vals, dtype=np.float32)
+    vals = np.asarray(words.vals, dtype=np.float64)
+    if vals.size:  # finer levels only cost bytes
+        step = np.log1p(vals.max()) / CREDIT_LEVELS
+        vals = np.expm1(np.round(np.log1p(vals) / step) * step)
     scale = float(vals.max()) / 255 if vals.size else 1.0
     arrays["wt_vocab"] = np.frombuffer(words.vocab, dtype=np.uint8)
     arrays["wt_indptr"] = np.asarray(words.indptr, dtype=np.int32)

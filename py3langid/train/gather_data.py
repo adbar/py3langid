@@ -43,14 +43,11 @@ def fetch(url, headers=None, retries=3):
     for attempt in range(retries):
         try:
             return urllib.request.urlopen(req, timeout=120)
-        except urllib.error.HTTPError as e:
-            if e.code == 404 or attempt == retries - 1:
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code == 404 or attempt == retries - 1:
                 raise
-            time.sleep(60 if e.code == 429 else 5)
-        except Exception:
-            if attempt == retries - 1:
-                raise
-            time.sleep(5)
+            time.sleep(60 if code == 429 else 5)
 
 
 def fetch_cached(url, cache_path, headers=None):
@@ -69,6 +66,14 @@ def fetch_head(url, cache_path, size):
     """The first *size* bytes of url, cached."""
     return fetch_cached(url, cache_path.with_name(f"{cache_path.name}.head{size}"),
                         {"Range": f"bytes=0-{size - 1}"})
+
+
+def _tar_lines(resp, mode, suffix):
+    """Lines of the members ending with suffix."""
+    with tarfile.open(fileobj=resp, mode=mode) as tar:
+        for member in tar:
+            if member.name.endswith(suffix):
+                yield from tar.extractfile(member)
 
 
 def cc100_docs(lang):
@@ -90,27 +95,18 @@ def novel_sentences(text, seen):
     return "\n".join(out).encode("utf-8")
 
 
-def _wiki_leads(resp):
-    """Yield opening_text per article (full "text" carries reference sections in other languages)."""
-    dec = bz2.BZ2Decompressor()
-    buf = b""
-    while chunk := resp.read(1 << 18):
-        buf += dec.decompress(chunk)
-        *lines, buf = buf.split(b"\n")
-        for line in lines:
-            if b'"opening_text"' in line:
-                text = json.loads(line).get("opening_text")
-                if text:
-                    yield text
-
-
 def wiki_docs(lang, date):
+    """One doc per opening_text (full "text" carries reference sections in other languages)."""
     code = WIKI_CODE.get(lang, lang)
-    seen = set()
+    seen, dec, buf = set(), bz2.BZ2Decompressor(), b""
     with fetch_head(CIRRUS_URL.format(code=code, date=date),
                     RAW_CACHE / "wiki" / f"{code}wiki-{date}.json.bz2", WIKI_RANGE) as resp:
-        for text in _wiki_leads(resp):
-            yield novel_sentences(text, seen)
+        while chunk := resp.read(1 << 18):
+            buf += dec.decompress(chunk)
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                if b'"opening_text"' in line and (text := json.loads(line).get("opening_text")):
+                    yield novel_sentences(text, seen)
 
 
 def tatoeba_docs(langs, max_docs):
@@ -118,19 +114,15 @@ def tatoeba_docs(langs, max_docs):
     by_iso3 = {ISO3[lang].encode(): lang for lang in langs if lang in ISO3}
     budget = max_docs * PACK_TARGET  # raw bytes kept per lang before packing
     rows, size = defaultdict(list), defaultdict(int)
-    with fetch_cached(TATOEBA_URL, RAW_CACHE / "tatoeba" / "sentences.tar.bz2") as resp, \
-         tarfile.open(fileobj=resp, mode="r|bz2") as tar:
-        for member in tar:
-            if not member.name.endswith("sentences.csv"):
+    with fetch_cached(TATOEBA_URL, RAW_CACHE / "tatoeba" / "sentences.tar.bz2") as resp:
+        for raw in _tar_lines(resp, "r|bz2", "sentences.csv"):
+            parts = raw.rstrip(b"\n").split(b"\t")
+            if len(parts) != 3:
                 continue
-            for raw in tar.extractfile(member):
-                parts = raw.rstrip(b"\n").split(b"\t")
-                if len(parts) != 3:
-                    continue
-                lang = by_iso3.get(parts[1])
-                if lang is not None and size[lang] < budget:
-                    rows[lang].append(parts[2])
-                    size[lang] += len(parts[2]) + 1
+            lang = by_iso3.get(parts[1])
+            if lang is not None and size[lang] < budget:
+                rows[lang].append(parts[2])
+                size[lang] += len(parts[2]) + 1
     return {lang: list(pack_docs(sents))[:max_docs] for lang, sents in rows.items()}
 
 
@@ -139,16 +131,11 @@ def leipzig_docs(lang):
     if not name:
         return
     sentences = []
-    with fetch_cached(LEIPZIG_URL.format(name=name),
-                      RAW_CACHE / "leipzig" / f"{name}.tar.gz") as resp, \
-         tarfile.open(fileobj=resp, mode="r|gz") as tar:
-        for member in tar:
-            if not member.name.endswith("-sentences.txt"):
-                continue
-            for raw in tar.extractfile(member):
-                parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("\t", 1)
-                if len(parts) == 2:
-                    sentences.append(parts[1])
+    with fetch_cached(LEIPZIG_URL.format(name=name), RAW_CACHE / "leipzig" / f"{name}.tar.gz") as resp:
+        for raw in _tar_lines(resp, "r|gz", "-sentences.txt"):
+            parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("\t", 1)
+            if len(parts) == 2:
+                sentences.append(parts[1])
     # file order (alphabetical) and fixed-size chunks reproduce the release corpus,
     # a uniform sample measured worse on CommonLID (-0.07)
     for i in range(0, len(sentences), LEIPZIG_SENTS):
@@ -161,7 +148,6 @@ def latest_cirrus_date():
     if not dates:
         raise RuntimeError(f"no dumps listed at {CIRRUS_INDEX}; pass --wiki-date")
     return dates[-2] if len(dates) > 1 else dates[-1]
-
 
 
 def write_manifest(out_root, info):

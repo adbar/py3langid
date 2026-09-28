@@ -1,7 +1,6 @@
 """Train a langid model from a prepared corpus."""
 
 import argparse
-import multiprocessing as mp
 import os
 from collections import Counter
 
@@ -24,15 +23,12 @@ def _axis(values):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-m","--model", help="save output to MODEL_DIR", metavar="MODEL_DIR")
-    parser.add_argument("-j","--jobs", type=int, metavar='N', help="spawn N processes (set to 1 for no parallelization)")
+    parser.add_argument("-j","--jobs", type=int, metavar='N', default=min(10, os.cpu_count() or 1), help="spawn N processes (set to 1 for no parallelization)")
     parser.add_argument("--feats_per_lang", type=int, metavar='N', help="select top N features for each language", default=FEATURES_PER_LANG)
     parser.add_argument("--shards", metavar="SHARD_DIR", help="n-gram count shard cache (default: CORPUS_DIR.shards)")
     parser.add_argument("corpus", help="read corpus from CORPUS_DIR", metavar="CORPUS_DIR")
 
     args = parser.parse_args(argv)
-
-    if args.jobs is None:
-        args.jobs = min(10, mp.cpu_count())
 
     model_dir = args.model or os.path.join('.', os.path.basename(args.corpus) + '.model')
 
@@ -45,12 +41,8 @@ def main(argv=None):
     langs, lang_dist, lang_index = _axis(lang for _, lang, _ in items)
     domains, domain_dist, domain_index = _axis(d for d, _, _ in items)
 
-    def _summary(names, dist):
-        return f"({len(names)}): " + ' '.join(
-            f"{n}({c})" for n, c in zip(names, dist))
-
-    print("langs" + _summary(langs, lang_dist))
-    print("domains" + _summary(domains, domain_dist))
+    for label, names, dist in (("langs", langs, lang_dist), ("domains", domains, domain_dist)):
+        print(f"{label}({len(names)}): " + ' '.join(f"{n}({c})" for n, c in zip(names, dist)))
     print(f"identified {len(items)} files")
 
     shard_dir = args.shards or os.path.normpath(args.corpus) + '.shards'

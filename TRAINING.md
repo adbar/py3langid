@@ -50,23 +50,27 @@ also on its own:
 live in `common.py` and `words.py`. A run with a warm shard cache takes
 about a minute.
 
-- Shards cache n-gram (orders 2 to 5), word and CJK counts per directory.
+- Shards cache n-gram (orders 2 to 5), word and CJK document frequencies
+  per directory.
 - Selection keeps the top `DF_TOKENS` terms per order, then the top
   `feats_per_lang` per language by LD weight.
 - NB counts come from the runtime's own longest-match walk. Counts up to
   `COUNT_FLOOR` are zeroed.
-- The word table adds PMI credits, so short input separates close
-  languages (ms/id, bs/hr). CJK marker characters get a fixed credit.
+- The word table adds PMI credits from document frequencies, so short input
+  separates close languages (ms/id, bs/hr). Long words need more documents. Tokens keep combining marks, so Indic words stay
+  whole. CJK marker characters get a fixed credit.
 
 ## Results
 
-Dev sets are WiLI-2018 and OpenLID. FLORES-200 and CommonLID are held out.
+Dev sets are WiLI-2018 and OpenLID. FLORES+ and CommonLID are held out.
+FLORES+ is pinned at v4.5 and used for evaluation only. It fixes the
+FLORES-200 Cantonese set, which was standard Chinese (97.44 on FLORES-200).
 The harness is not in the repository.
 
-| | WiLI | OpenLID | FLORES-200 | CommonLID |
+| | WiLI | OpenLID | FLORES+ | CommonLID |
 |---|---|---|---|---|
-| Shipped model | 96.08 | 96.36 | 97.40 | 94.86 |
-| 2-word prefixes | 75.34 | 84.38 | | |
+| Shipped model | 96.09 | 96.42 | 98.23 | 94.95 |
+| 2-word prefixes | 76.09 | 85.23 | | |
 | Pre-fork langid.py | 91.21 | 88.41 | | |
 
 The model has 139 labels and 97,283 features, and weighs 7.2 MB.

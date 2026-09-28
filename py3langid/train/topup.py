@@ -21,13 +21,9 @@ TOPUP_SKIP = frozenset({"pcm"})  # GlotCC pcm draws English to pcm
 GLOT_SCRIPT = {"crh": "Latn", "gom": "Deva", "sr": "Cyrl", "srl": "Latn",
                "uz": "Latn", "uzc": "Cyrl", "zh": "Hans", "zht": "Hant"}
 GLOT_ISO3 = {"uz": "uzn"}
+PARTIAL = ".partial"  # marks a class dir whose stream failed
 
 _CONFIG_RE = re.compile(r"^[a-z]{3}([-_])[A-Z][a-z]{3}$")
-
-
-def _class_iso3(cls):
-    base = ALT_CLASS.get(cls, cls)
-    return GLOT_ISO3.get(base) or ISO3.get(base)
 
 
 def _repo_configs(repo):
@@ -42,7 +38,8 @@ def _repo_configs(repo):
 
 
 def _glot_config(configs, cls):
-    cands = sorted(configs.get(_class_iso3(cls) or "", ()))
+    base = ALT_CLASS.get(cls, cls)
+    cands = sorted(configs.get(GLOT_ISO3.get(base) or ISO3.get(base) or "", ()))
     if len(cands) > 1:
         want = GLOT_SCRIPT.get(cls)
         cands = [c for c in cands if want and c.endswith(want)]
@@ -58,16 +55,11 @@ def _glot_docs(repo, field, configs, cls):
     return pack_docs(row[field] for row in ds if row.get("dataset") not in EVAL_SOURCES)
 
 
-def class_counts(out_root):
+def needy(out_root, classes):
+    """Classes with fewer than TOPUP_MIN_DOMAINS domains of TOPUP_DOMAIN_DOCS docs."""
     counts = defaultdict(lambda: defaultdict(int))
     for domain, cls, _path in walk_corpus(out_root):
         counts[cls][domain] += 1
-    return counts
-
-
-def needy(out_root, classes):
-    """Classes with fewer than TOPUP_MIN_DOMAINS domains of TOPUP_DOMAIN_DOCS docs."""
-    counts = class_counts(out_root)
     return [c for c in classes if c not in TOPUP_SKIP
             and sum(n >= TOPUP_DOMAIN_DOCS for n in counts[c].values()) < TOPUP_MIN_DOMAINS]
 
@@ -80,8 +72,15 @@ def gather_topup(out_root, langs, max_docs, jobs=4):
             (GLOTCC_REPO, "glotcc", "content", thin),
             (GLOT500_REPO, "glot500", "text", [c for c in GLOT500_CLASSES if c in classes])):
         configs = _repo_configs(repo)
-        # never re-stream a class this source already touched
-        todo = [c for c in targets if not any((out_root / source / c).glob("*.txt"))]
-        gather_domain(source, partial(_glot_docs, repo, field, configs), todo,
-                      jobs, out_root, max_docs, no_split=todo)
+        # never re-stream a class this source completed, retry failed streams
+        todo = [c for c in targets if (out_root / source / c / PARTIAL).exists()
+                or not any((out_root / source / c).glob("*.txt"))]
+        done = gather_domain(source, partial(_glot_docs, repo, field, configs), todo,
+                             jobs, out_root, max_docs, no_split=todo)
+        for c in todo:
+            marker = out_root / source / c / PARTIAL
+            if c in done:
+                marker.unlink(missing_ok=True)
+            elif marker.parent.is_dir():
+                marker.touch()
     print(f"topup done; still thin: {needy(out_root, classes)}")

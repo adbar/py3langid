@@ -30,14 +30,6 @@ def unpointed(text):
     return not letters or len(HEBREW_POINT.findall(text)) / letters < MIN_POINT_RATIO
 
 
-def not_egyptian(text):
-    return EGYPTIAN.isdisjoint(TOKEN_RE.findall(text))
-
-
-def not_cantonese(text):
-    return CANTONESE.isdisjoint(text)
-
-
 def not_devanagari(line):
     """Devanagari is less than half of the letters."""
     text = line.decode("utf-8", "ignore")
@@ -63,7 +55,11 @@ def zulu_test(corpus):
                             for w in _words(line)) > 0
 
 
-DOC_RULES = {"hbo": unpointed, "arz": not_egyptian, "yue": not_cantonese}
+DOC_RULES = {
+    "hbo": unpointed,
+    "arz": lambda text: EGYPTIAN.isdisjoint(TOKEN_RE.findall(text)),
+    "yue": CANTONESE.isdisjoint,
+}
 
 
 def apply_rules(corpus):

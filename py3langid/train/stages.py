@@ -29,22 +29,21 @@ def _xlogx(v):
     return v * log
 
 
-def entropy(v, axis=-1):
-    """Entropy (nats) of count vectors; all-zero → 0."""
-    v = np.asarray(v, dtype=float)
-    total = v.sum(axis)
+def _entropy(total, xlogx_sum):
+    """Entropy (nats) from a total and its summed x log x, 0 for a zero total."""
     nonzero = total > 0
     safe = np.where(nonzero, total, 1.0)
-    return np.where(nonzero, np.log(safe) - _xlogx(v).sum(axis) / safe, 0.0)
+    return np.where(nonzero, np.log(safe) - xlogx_sum / safe, 0.0)
+
+
+def entropy(v):
+    v = np.asarray(v, dtype=float)
+    return _entropy(v.sum(-1), _xlogx(v).sum(-1))
 
 
 def _binary_entropy(a, b):
-    # inlined two-column entropy: ~2x faster than entropy(np.stack([a, b]))
-    total = a + b
-    nonzero = total > 0
-    safe = np.where(nonzero, total, 1.0)
-    return np.where(nonzero,
-                    np.log(safe) - (_xlogx(a) + _xlogx(b)) / safe, 0.0)
+    # two columns without stacking: ~2x faster than entropy(np.stack([a, b]))
+    return _entropy(a + b, _xlogx(a) + _xlogx(b))
 
 
 def compute_IG(cm_pos, dist):

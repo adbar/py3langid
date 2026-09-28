@@ -8,6 +8,7 @@ History
 * New model: 2-word inputs +8 to +9 points (WiLI, OpenLID), CommonLID +2.3,
   7.2 MB (was 4.6)
 * Token table: per-language word and CJK character credits for short input
+* Word tokens keep combining marks (Indic, Hebrew)
 * Chinese trained as two script classes folded into ``zh``
 * Input lowercased and space-padded, as in training
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)

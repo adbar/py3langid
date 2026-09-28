@@ -9,11 +9,12 @@ import pytest
 
 from py3langid.modelio import Model, WordTable, load_model, save_model
 
-NO_WORDS = WordTable(b"", np.zeros(1, dtype=np.int32), np.zeros(0, dtype=np.int32),
-                     np.zeros(0, dtype=np.float32))
+from .conftest import NO_WORDS
+
+ONE_ROW, ONE_STATE = array("H", range(256)), array("L", [0])
 
 
-def _model(rows, row_index, output, classes=("en", "fr"), ptc_rows=1):
+def _model(rows=ONE_ROW, row_index=ONE_STATE, output=(0,), classes=("en", "fr"), ptc_rows=1):
     """a Model with filler for the NB arrays"""
     return Model(np.zeros((ptc_rows, len(classes)), dtype=np.float32),
                  np.full(len(classes), 0.5, dtype=np.float32), list(classes),
@@ -48,7 +49,7 @@ def test_empty_tk_output(tmp_path):
     '''model with no emitting states survives the roundtrip'''
     rows = array("H", range(256))
     path = tmp_path / "model.npz.xz"
-    save_model(path, _model(rows, array("L", [0]), [-1], ptc_rows=0))
+    save_model(path, _model(rows, output=[-1], ptc_rows=0))
     _ptc2, _pc2, classes2, rows2, _row2, output2, _ = load_model(path)
     assert output2 == [-1] and classes2 == ["en", "fr"] and rows2 == rows
 
@@ -56,7 +57,7 @@ def test_empty_tk_output(tmp_path):
 def test_uint32_widening(tmp_path):
     '''a DFA beyond the uint16 state ceiling round-trips via uint32'''
     rows = array("L", [1 << 16] * 256)  # state id overflows uint16
-    save_model(tmp_path / "m.npz.xz", _model(rows, array("L", [0]), [0]))
+    save_model(tmp_path / "m.npz.xz", _model(rows))
     _, _, _, loaded, _, _, _ = load_model(tmp_path / "m.npz.xz")
     assert loaded.itemsize == 4
     assert list(loaded) == list(rows)
@@ -111,19 +112,31 @@ def test_load_leaves_no_temp_file(tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     path = tmp_path / "m.npz.xz"
-    save_model(path, _model(array("H", range(256)), array("L", [0]), [0]))
+    save_model(path, _model())
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     load_model(path)
     assert list(scratch.iterdir()) == []
 
 
 def test_words_roundtrip(tmp_path):
-    """the word table survives the roundtrip with 8-bit credits"""
+    """the word table survives the roundtrip with snapped credits"""
     path = tmp_path / "m.npz.xz"
     words = WordTable(b"bonjour\nhello", np.array([0, 1, 3]), np.array([1, 0, 1]),
                       np.array([2.55, 5.1, 0.01], dtype=np.float32))
-    save_model(path, _model(array("H", range(256)), array("L", [0]), [0])._replace(words=words))
+    save_model(path, _model()._replace(words=words))
     *_, loaded = load_model(path)
     assert loaded[0] == b"bonjour\nhello" and loaded[1].tolist() == [0, 1, 3]
     assert loaded[2].tolist() == [1, 0, 1]
     assert np.allclose(loaded[3], [2.55, 5.1, 0.0], atol=0.02)
+
+
+def test_credits_snapped_to_levels(tmp_path):
+    """saved credits take at most CREDIT_LEVELS + 1 values, within a few percent"""
+    from py3langid.modelio import CREDIT_LEVELS
+    path = tmp_path / "m.npz.xz"
+    vals = np.linspace(2, 20, 500, dtype=np.float32)
+    words = WordTable(b"x", np.array([0, 500]), np.zeros(500, dtype=np.int32), vals)
+    save_model(path, _model()._replace(words=words))
+    loaded = load_model(path).words.vals
+    assert len(np.unique(loaded)) <= CREDIT_LEVELS + 1
+    assert np.allclose(loaded, vals, rtol=0.05)

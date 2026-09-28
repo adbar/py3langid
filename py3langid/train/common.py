@@ -16,27 +16,20 @@ FEATURES_PER_LANG = 1050 # per-language, not global (keeps script-novel langs vi
 COUNT_FLOOR = 2          # NB counts at or below this are zeroed before smoothing
 DOC_CAP = 3000           # byte budget: gathering, tokenization, zxx
 MIN_DOC = 500
-NORMALIZE_VERSION = 4    # bump when normalize or the shard payload changes
+NORMALIZE_VERSION = 6    # bump when normalize or the shard payload changes
 
 SENT_SPLIT = re.compile(r"(?<=[.!?])(?:\s+|(?=[　-鿿＀-￯]))|(?<=[。！？।])")
 
 
 # Traditional vs Simplified Chinese: 150 frequent, script-pure character pairs
-_TRAD = "為時來會個這過對發現開經還們當與說動間進實國關體沒點將內讓從樣機無長麼應業場種學兩問別給結題產網幾設帶數務變電認該計總覺話區資選強處記頭東達員報爲見箇氣單傳旹門據統專確髮論導滿風許備質觀萬視難標準類則調連約續較決運請夠費參規際卻愛邊辦線級驗歡轉創議領隨雖價術離顯師組裝書項識車樂買況聯團張獲優態熱節圖"
-_SIMP = "为时来会个这过对发现开经还们当与说动间进实国关体没点将内让从样机无长么应业场种学两问别给结题产网几设带数务变电认该计总觉话区资选强处记头东达员报为见个气单传时门据统专确发论导满风许备质观万视难标准类则调连约续较决运请够费参规际却爱边办线级验欢转创议领随虽价术离显师组装书项识车乐买况联团张获优态热节图"
-_HANT = frozenset(_TRAD)
-_HANS = frozenset(_SIMP)
+_HANT = frozenset("為時來會個這過對發現開經還們當與說動間進實國關體沒點將內讓從樣機無長麼應業場種學兩問別給結題產網幾設帶數務變電認該計總覺話區資選強處記頭東達員報爲見箇氣單傳旹門據統專確髮論導滿風許備質觀萬視難標準類則調連約續較決運請夠費參規際卻愛邊辦線級驗歡轉創議領隨雖價術離顯師組裝書項識車樂買況聯團張獲優態熱節圖")
+_HANS = frozenset("为时来会个这过对发现开经还们当与说动间进实国关体没点将内让从样机无长么应业场种学两问别给结题产网几设带数务变电认该计总觉话区资选强处记头东达员报为见个气单传时门据统专确发论导满风许备质观万视难标准类则调连约续较决运请够费参规际却爱边办线级验欢转创议领随虽价术离显师组装书项识车乐买况联团张获优态热节图")
 
 
 def hant_majority(doc):
     """True if doc has more Traditional than Simplified marker characters."""
-    trad = simp = 0
-    for ch in doc.decode("utf-8", errors="surrogateescape"):
-        if ch in _HANT:
-            trad += 1
-        elif ch in _HANS:
-            simp += 1
-    return trad > simp
+    text = doc.decode("utf-8", errors="surrogateescape")
+    return sum(ch in _HANT for ch in text) > sum(ch in _HANS for ch in text)
 
 
 def latin_majority(doc):
@@ -62,13 +55,13 @@ def class_of(lang, doc):
     return spec[0] if spec and spec[1](doc) else lang
 
 
-def walk_corpus(root, skip_langs=(), pattern="*.txt"):
+def walk_corpus(root, skip_langs=()):
     """Yield (domain, lang, path) for docs three levels down, sorted."""
     for domain in sorted(p for p in Path(root).iterdir() if p.is_dir()):
         for lang_dir in sorted(p for p in domain.iterdir() if p.is_dir()):
             if lang_dir.name in skip_langs:
                 continue
-            for doc in sorted(lang_dir.glob(pattern)):
+            for doc in sorted(lang_dir.glob("*.txt")):
                 if doc.is_file():
                     yield domain.name, lang_dir.name, str(doc)
 
@@ -98,16 +91,11 @@ def drop(corpus, paths):
         src.replace(dst)
 
 
-def job_chunks(seq, jobs):
-    """One contiguous chunk per job."""
-    size = max(1, -(-len(seq) // max(1, jobs)))
-    return [seq[i:i + size] for i in range(0, len(seq), size)]
-
-
 def pmap_chunks(fn, tasks, jobs=1, shared=()):
     """Yield fn(*shared, chunk) over one contiguous chunk of tasks per job."""
+    size = max(1, -(-len(tasks) // max(1, jobs)))
     with MapPool(jobs) as f:
-        yield from f(partial(fn, *shared), job_chunks(tasks, jobs))
+        yield from f(partial(fn, *shared), [tasks[i:i + size] for i in range(0, len(tasks), size)])
 
 
 @contextmanager

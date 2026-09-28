@@ -71,8 +71,8 @@ def valid_doc(doc):
     return doc if len(doc) >= MIN_DOC else None
 
 
-def pack_docs(rows, target=PACK_TARGET):
-    """Pack small rows (str or bytes) into ~target-byte docs; large rows pass through.
+def pack_docs(rows):
+    """Pack small rows (str or bytes) into ~PACK_TARGET-byte docs; large rows pass through.
     A row of MIN_DOC bytes passes alone, so non-Latin scripts get short docs.
     Packing everything to DOC_CAP was measured worse on CommonLID (-0.13)."""
     buf, size = [], 0
@@ -83,7 +83,7 @@ def pack_docs(rows, target=PACK_TARGET):
         else:
             buf.append(raw)
             size += len(raw) + 1
-            if size >= target:
+            if size >= PACK_TARGET:
                 yield b"\n".join(buf)
                 buf, size = [], 0
     if size >= MIN_DOC:
@@ -94,17 +94,13 @@ def write_docs(out_dir, docs, max_docs, split=True):
     return DocWriter(out_dir, max_docs, split).fill(docs)
 
 
-def _doc_count(domain_dir, lang):
-    # only the primary dir gates completion: minority-script dirs may never
-    # fill from mono-script sources (topup covers them)
-    return sum(1 for _ in (domain_dir / lang).glob("*.txt"))
-
-
 def gather_domain(name, docs_of, langs, jobs, out_root, max_docs, no_split=()):
     """Write docs_of(lang) for every lang whose dir is not full yet.
     no_split: langs whose source is already script-pure (no routing to the alt dir)."""
+    # only the primary dir gates completion: minority-script dirs may never
+    # fill from mono-script sources (topup covers them)
     todo = [lang for lang in langs
-            if _doc_count(out_root / name, lang) < max_docs]
+            if sum(1 for _ in (out_root / name / lang).glob("*.txt")) < max_docs]
     if len(todo) < len(langs):
         print(f"{name}: {len(langs) - len(todo)} langs already complete")
     counts = {}

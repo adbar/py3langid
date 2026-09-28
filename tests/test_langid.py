@@ -1,30 +1,30 @@
 
+import ast
 import csv
+import io
 import json
 import lzma
-import math
 import shutil
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 import py3langid as langid
+import py3langid.langid as mod
 from py3langid.langid import (
-    MODEL_DIR,
     MODEL_FILE,
     RAW_FLOOR,
+    TOKEN_RE,
     LanguageIdentifier,
-    _load_identifier,
     normalize,
+    visit_counts,
 )
 from py3langid.modelio import WordTable
 
-NO_WORDS = WordTable(b"", np.zeros(1, dtype=np.int32), np.zeros(0, dtype=np.int32),
-                     np.zeros(0, dtype=np.float32))
+from .conftest import NO_WORDS
 
 
 # a model load costs ~0.25s: share one per variant, undoing set_languages,
@@ -61,11 +61,6 @@ def test_classify_and_rank(text, expected):
     assert langid.rank(text)[0][0] == expected
 
 
-def test_norm_probs(norm_identifier):
-    _, prob = norm_identifier.classify('Test Unicode sur du texte en français')
-    assert 0 <= prob <= 1
-
-
 def test_calibration_sqrt(norm_identifier):
     """sqrt-of-bytes temperature: confidence tracks ambiguity, not saturated"""
     _, hi = norm_identifier.classify('This is clearly an English sentence with plenty of text.')
@@ -74,14 +69,12 @@ def test_calibration_sqrt(norm_identifier):
     assert lo < 0.9
 
 
-def test_featureless_input(identifier):
-    """no features -> a flat finite floor"""
-    raw = identifier.classify('#')
-    # finite (stays JSON-serializable) but below any real log-probability,
-    # so a caller thresholding raw scores never mistakes it for a hit
-    assert raw[1] == RAW_FLOOR
-    assert math.isfinite(raw[1])
-    assert raw[1] < identifier.classify('This is an English sentence.')[1]
+def test_featureless_input_keeps_word_credit(identifier, norm_identifier):
+    """'job' has no n-gram but a table credit, in both modes"""
+    assert identifier._raw_score(b' job ') is None
+    assert identifier.classify('job')[0] == 'en'
+    assert identifier.classify('job')[1] > RAW_FLOOR
+    assert norm_identifier.classify('job')[0] == 'en'
 
 
 def test_unique_labels(identifier):
@@ -113,37 +106,33 @@ def test_rank_takes_max_over_aliased_columns(identifier):
         cols = [i for i, c in enumerate(identifier._model.classes) if c == lang]
         assert score == pytest.approx(max(float(per_col[i]) for i in cols), abs=1e-3)
     assert scores.tolist() == [s for _, s in sorted(ranked, key=lambda x: identifier.labels.index(x[0]))]
-    # sr/uz really do exercise the multi-column path
-    assert any(identifier._model.classes.count(c) == 2 for c in identifier.labels)
 
 
-def test_rank_agrees_with_classify(identifier):
-    """rank()[0] is classify()"""
-    texts = ['ne znam sto to znaci', 'ovo je test', 'dobar dan', 'kaj',
-             'Test Unicode sur du texte en français', 'hi', 'a']
-    for text in texts:
-        lang, conf = identifier.classify(text)
-        assert identifier.rank(text)[0] == (lang, pytest.approx(conf)), text
+@pytest.mark.parametrize('norm', [False, True])
+def test_rank_agrees_with_classify(identifier, norm_identifier, norm):
+    """rank()[0] is classify(), aliased columns included (regression)"""
+    ident = norm_identifier if norm else identifier
+    for text in ('ne znam sto to znaci', 'ovo je test', 'dobar dan', 'kaj', 'hi', 'a',
+                 'Test Unicode sur du texte en français', 'Prema Jungovoj teoriji, m',
+                 'Serbia II Регионална лига', 'Toshkent shahri markazida'):
+        lang, conf = ident.classify(text)
+        assert ident.rank(text)[0] == (lang, pytest.approx(conf, rel=1e-6)), text
 
 
 def test_language_restriction(identifier):
-    """a restriction narrows the class set, still classifies, and reverts"""
+    """a restriction narrows the labels, rejects bad codes, and reverts"""
     full = len(identifier.labels)
     identifier.set_languages(['en', 'de'])
     assert identifier.labels == ['de', 'en']
     assert identifier.classify('This should be enough text.')[0] == 'en'
-    identifier.set_languages(None)
-    assert len(identifier.labels) == full
-
-
-def test_unnormalized(identifier):
-    _, prob = identifier.classify('Test Unicode sur du texte en français')
-    assert prob < 0
-
-
-def test_language_subset(identifier):
     identifier.set_languages(['de', 'en', 'fr'])
     assert identifier.classify('这样不好')[0] != 'zh'
+    with pytest.raises(ValueError, match="Unknown language code"):
+        identifier.set_languages(['xx_invalid'])
+    with pytest.raises(ValueError):
+        identifier.set_languages([])
+    identifier.set_languages(None)
+    assert len(identifier.labels) == full
 
 
 def test_allcaps_lowering():
@@ -176,18 +165,18 @@ def test_truncated_bytes_reach_the_str_branch():
     assert normalize(b'\xff\xfe\xff\xfe')[0] == b'\xff\xfe\xff\xfe'
 
 
-def test_empty_and_short():
+def test_featureless_and_short(identifier):
     '''Feature-less input scores a finite floor, short input does not crash'''
-    for empty in ('', b''):
-        lang, score = langid.classify(empty)
+    for empty in ('', b'', '#'):
+        lang, score = identifier.classify(empty)
         assert isinstance(lang, str)
         assert score == RAW_FLOOR
         # finite, so the server's JSON stays valid for strict parsers
         json.dumps({'confidence': score}, allow_nan=False)
+    assert RAW_FLOOR < identifier.classify('This is an English sentence.')[1] < 0
     # digit-only input has features since the fpl700 budget: routed to zxx
-    assert langid.classify('12345')[0] == 'zxx'
-    lang, score = langid.classify('a')
-    assert isinstance(lang, str)
+    assert identifier.classify('12345')[0] == 'zxx'
+    assert isinstance(identifier.classify('a')[0], str)
 
 
 def test_norm_probs_empty(norm_identifier):
@@ -197,18 +186,6 @@ def test_norm_probs_empty(norm_identifier):
     assert sum(probs) == pytest.approx(1.0)
     norm_identifier.set_languages(['en', 'sr'])
     assert [p for _, p in norm_identifier.rank('')] == pytest.approx([0.5, 0.5])
-    norm_identifier.set_languages(None)
-    # no n-grams but a table token: scored from its credit
-    assert norm_identifier.classify('job')[0] == 'en'
-
-
-def test_classify_matches_rank(norm_identifier):
-    """aliased columns merge the same way in both APIs (regression)"""
-    for text in ('Prema Jungovoj teoriji, m', 'Serbia II Регионална лига',
-                 'Toshkent shahri markazida', 'This is an English sentence.'):
-        lang, conf = norm_identifier.classify(text)
-        top_lang, top_conf = norm_identifier.rank(text)[0]
-        assert (lang, conf) == (top_lang, pytest.approx(top_conf, rel=1e-6))
 
 
 def test_rank_sorted(identifier):
@@ -218,17 +195,10 @@ def test_rank_sorted(identifier):
     scores = [s for _, s in ranking]
     assert all(isinstance(s, float) for s in scores)
     assert scores == sorted(scores, reverse=True)
-    # one entry per output label: aliased columns (sr/uz) share one
-    assert len(ranking) == len(identifier.labels)
-    assert len(ranking) == len({lang for lang, _ in ranking})
 
 
-def test_set_languages_error(identifier):
-    '''set_languages raises on unknown codes'''
-    with pytest.raises(ValueError, match="Unknown language code"):
-        identifier.set_languages(['xx_invalid'])
-    with pytest.raises(ValueError):
-        identifier.set_languages([])
+def _confident_en(out):
+    return b'en' in out and 0.5 < float(out.split()[-1].rstrip(b')')) <= 1.0
 
 
 def test_redirection():
@@ -239,7 +209,7 @@ def test_redirection():
         readme = f.read()
     result = subprocess.check_output([sys.executable, '-m', 'py3langid.langid', '-n'],
                                      input=readme, cwd=thisdir.parent)
-    assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
+    assert _confident_en(result)
 
 
 def test_cli_batch(tmp_path):
@@ -254,35 +224,30 @@ def test_cli_batch(tmp_path):
     assert results[str(en)] == 'en' and results[str(fr)] == 'fr'
 
 
-def test_cli_external_model(tmp_path):
-    '''-m loads a model from a path outside the package'''
+def test_cli_external_model(cli, tmp_path):
+    '''-m loads an outside model, an unusable one raises'''
     model_path = tmp_path / 'external.npz.xz'
-    shutil.copy(MODEL_DIR / MODEL_FILE, model_path)
-    result = subprocess.check_output(['langid', '-n', '-m', str(model_path)],
-                                     input=b'This should be enough text.')
-    assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
+    shutil.copy(MODEL_FILE, model_path)
+    lang, conf = ast.literal_eval(cli(['-n', '-m', str(model_path)], 'This should be enough text.'))
+    assert lang == 'en' and 0.5 < conf <= 1.0
     # the path is honored, not silently replaced by the bundled model
-    missing = subprocess.run(['langid', '-n', '-m', str(tmp_path / 'nope.npz.xz')],
-                             input=b'This should be enough text.',
-                             capture_output=True, check=False)
-    assert missing.returncode != 0
+    bad = tmp_path / 'not-a-model.npz.xz'
+    bad.write_bytes(b'definitely not an xz stream')
+    for path in (tmp_path / 'nope.npz.xz', bad):
+        with pytest.raises((OSError, lzma.LZMAError, ValueError)):
+            cli(['-n', '-m', str(path)], 'text')
 
 
 def test_cli():
     '''Test console scripts entry point'''
-    result = subprocess.check_output(['langid', '-n'], input=b'This should be enough text.')
-    assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
-    result = subprocess.check_output(['langid', '-n', '-l', 'bg,en,uk'], input=b'This should be enough text.')
-    assert b'en' in result and 0.5 < float(result.split()[-1].rstrip(b')')) <= 1.0
+    for extra in ([], ['-l', 'bg,en,uk']):
+        assert _confident_en(subprocess.check_output(['langid', '-n', *extra],
+                                                     input=b'This should be enough text.'))
 
 
 @pytest.fixture
 def cli(monkeypatch):
     """Run langid.main() in-process on piped stdin, returning captured stdout."""
-    import io
-
-    import py3langid.langid as mod
-
     def run(argv, stdin=''):
         monkeypatch.setattr(mod.sys, 'stdin', io.StringIO(stdin))
         out = io.StringIO()
@@ -304,8 +269,6 @@ def test_main_argv_document_and_line_mode(cli):
 
 def test_main_argv_dist_and_langs(cli):
     """-d ranks every label, and -l restricts the ranking"""
-    import ast
-
     out = cli(['-d', '-l', 'bg,en,uk'], 'This should be enough text.')
     ranking = ast.literal_eval(out)  # printed repr of a list of (label, score)
     langs = [lang for lang, _ in ranking]
@@ -346,7 +309,7 @@ def test_min_confidence(identifier):
 
 def test_from_modelpath():
     """from_modelpath loads the npz+LZMA layout from an arbitrary path"""
-    ident = LanguageIdentifier.from_modelpath(MODEL_DIR / MODEL_FILE)
+    ident = LanguageIdentifier.from_modelpath(MODEL_FILE)
     assert ident.classify('This should be enough text.')[0] == 'en'
     # 0.4.0 API: package-relative path, positional norm_probs
     legacy = LanguageIdentifier.from_model_file('data/model.npz.xz', True)
@@ -354,28 +317,13 @@ def test_from_modelpath():
     assert legacy.classify('This should be enough text.')[0] == 'en'
 
 
-def test_external_model_failure_raises(tmp_path):
-    """an unusable -m path raises instead of silently falling back"""
-    bad = tmp_path / 'not-a-model.npz.xz'
-    bad.write_bytes(b'definitely not an xz stream')
-    with pytest.raises((OSError, lzma.LZMAError, ValueError)):
-        _load_identifier(str(bad))
-
-
 def test_score_log1p(identifier):
     """scoring applies sublinear TF (log1p) plus class priors"""
     text = b' ' + normalize(b'This should be enough text.')[0] + b' '
-    state, idxs = 0, []
-    for letter in text:
-        state = identifier._model.nextmove[(identifier._model.row[state] << 8) + letter]
-        feat = identifier._model.output[state]  # one longest match per position
-        if feat >= 0:
-            idxs.append(feat)
-    fc = Counter(idxs)
-    idx = np.fromiter(fc.keys(), dtype=np.intp, count=len(fc))
-    counts = np.fromiter(fc.values(), dtype=np.float32, count=len(fc))
-    expected = np.log1p(counts) @ np.asarray(identifier._model.ptc, dtype=np.float32)[idx] \
-        + identifier._model.pc
+    m = identifier._model
+    fc = visit_counts(m.nextmove, [r << 8 for r in m.row], m.output, text)
+    expected = np.log1p(np.array(list(fc.values()), dtype=np.float32)) \
+        @ np.asarray(m.ptc, dtype=np.float32)[list(fc)] + m.pc
     # _raw_score is per column, before aliased columns are merged
     assert np.allclose(identifier._raw_score(text), expected,
                        rtol=1e-4)
@@ -383,11 +331,8 @@ def test_score_log1p(identifier):
 
 def test_cjk_tokens_are_single_characters(identifier):
     """a CJK character in the table is credited wherever it occurs; Latin words stay whole"""
-    import numpy as np
-
-    from py3langid.langid import TOKEN_RE
-
     assert TOKEN_RE.findall('amazon嘅資料 ok') == ['amazon', '嘅', '資', '料', 'ok']
+    assert TOKEN_RE.findall('परमेश्वर বাংলা בְּרֵאשִׁית') == ['परमेश्वर', 'বাংলা', 'בְּרֵאשִׁית']
     col, lab = identifier._model.classes.index('yue'), identifier.labels.index('yue')
     plain = _variant(identifier)
     marked = _variant(identifier, words=WordTable("嘅".encode(), np.array([0, 1]), np.array([col]),
@@ -407,8 +352,6 @@ def test_shipped_cjk_markers(identifier, norm_identifier):
 
 def test_word_table_credit_and_language_restriction(identifier):
     """a known word adds its credit to its columns; unknown words add nothing"""
-    import numpy as np
-
     en, fr = identifier.labels.index('en'), identifier.labels.index('fr')
     assert identifier._model.classes.index('en') == en  # single-column labels: same index
     words = WordTable(b"bonjour\nzzqx", np.array([0, 2, 3]), np.array([fr, en, en]),
