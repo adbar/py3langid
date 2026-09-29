@@ -3,41 +3,31 @@ import base64
 import json
 import random
 import string
-import sys
 from pathlib import Path
 
-from .common import DOC_CAP
+from .common import cap_bytes
 
 DOCS_PER_DOMAIN = 300
 DOMAIN_SEEDS = {"wiki": 1, "cc100": 2}
 
+GENRES = (
+    lambda rng, n: " ".join(str(rng.randint(0, 10**rng.randint(1, 9))) for _ in range(8)),
+    lambda rng, n: "".join(rng.choice("!@#$%^&*()_+-=[]{};:,.<>/?|~`\"'\\") for _ in range(n)),
+    lambda rng, n: "".join(rng.choice(string.ascii_letters + " ") for _ in range(n)),
+    lambda rng, n: "".join(chr(rng.choice([rng.randint(0x2200, 0x23FF), rng.randint(0x2500, 0x27BF), rng.randint(0x1F300, 0x1F5FF)])) for _ in range(n // 2)),
+    lambda rng, n: base64.b64encode(rng.randbytes(n)).decode(),
+    lambda rng, n: rng.randbytes(n // 2).hex(),
+    lambda rng, n: " ".join(f"https://ex{rng.randint(1,999)}.com/{rng.randbytes(4).hex()}?id={rng.randint(1,9999)}" for _ in range(3)),
+    lambda rng, n: "".join(f"<t{rng.randint(1,99)} a='{rng.randbytes(3).hex()}'/>" for _ in range(6)),
+    lambda rng, n: json.dumps({f"k{rng.randint(1,99)}": rng.randint(0, 9999) for _ in range(5)}),
+    lambda rng, n: " ".join(["".join(rng.choice(string.ascii_lowercase) for _ in range(rng.randint(2, 6)))] * rng.randint(5, 15)),
+)
+
+
 def _doc(rng):
-    genre = rng.randrange(10)
-    lines = []
-    for _ in range(rng.randint(30, 60)):
-        n = rng.randint(20, 70)
-        if genre == 0:
-            lines.append(" ".join(str(rng.randint(0, 10**rng.randint(1, 9))) for _ in range(8)))
-        elif genre == 1:
-            lines.append("".join(rng.choice("!@#$%^&*()_+-=[]{};:,.<>/?|~`\"'\\") for _ in range(n)))
-        elif genre == 2:
-            lines.append("".join(rng.choice(string.ascii_letters + " ") for _ in range(n)))
-        elif genre == 3:
-            lines.append("".join(chr(rng.choice([rng.randint(0x2200, 0x23FF), rng.randint(0x2500, 0x27BF), rng.randint(0x1F300, 0x1F5FF)])) for _ in range(n // 2)))
-        elif genre == 4:
-            lines.append(base64.b64encode(rng.randbytes(n)).decode())
-        elif genre == 5:
-            lines.append(rng.randbytes(n // 2).hex())
-        elif genre == 6:
-            lines.append(" ".join(f"https://ex{rng.randint(1,999)}.com/{rng.randbytes(4).hex()}?id={rng.randint(1,9999)}" for _ in range(3)))
-        elif genre == 7:
-            lines.append("".join(f"<t{rng.randint(1,99)} a='{rng.randbytes(3).hex()}'/>" for _ in range(6)))
-        elif genre == 8:
-            lines.append(json.dumps({f"k{rng.randint(1,99)}": rng.randint(0, 9999) for _ in range(5)}))
-        else:
-            tok = "".join(rng.choice(string.ascii_lowercase) for _ in range(rng.randint(2, 6)))
-            lines.append(" ".join([tok] * rng.randint(5, 15)))
-    return "\n".join(lines).encode()[:DOC_CAP]
+    genre = GENRES[rng.randrange(len(GENRES))]
+    lines = [genre(rng, rng.randint(20, 70)) for _ in range(rng.randint(30, 60))]
+    return cap_bytes("\n".join(lines).encode())
 
 
 def ensure_zxx(corpus):
@@ -54,6 +44,3 @@ def ensure_zxx(corpus):
             written += 1
     return written
 
-
-if __name__ == "__main__":
-    print("zxx docs written:", ensure_zxx(sys.argv[1]))

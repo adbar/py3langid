@@ -62,9 +62,12 @@ langid = "py3langid.langid:main"
 "Blog" = "https://adrien.barbaresi.eu/blog/language-detection-langid-py-faster.html"
 "Tracker" = "https://github.com/adbar/py3langid/issues"
 
-# Development extras
-[project.optional-dependencies]
+# https://peps.python.org/pep-0735/ (installed by `uv sync` without extra flags)
+[dependency-groups]
 dev = [
     "pytest",
     "pytest-cov",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
