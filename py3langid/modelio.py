@@ -1,14 +1,13 @@
 """Model serialization: npz inside LZMA, no pickle.
 
-DFA rows are deduplicated: `nextmove` holds distinct 256-byte rows,
-`nextmove_row` maps state → row. Both keys required; legacy models rejected.
+NB counts are stored sparse, column-major, with the feature list: the scanner
+is rebuilt at load (`dfa.build_dfa`). Other layouts are rejected.
 """
 
 import io
 import lzma
 import shutil
 import tempfile
-from array import array
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -24,42 +23,51 @@ class WordTable(NamedTuple):
     vals: Any       # credits
 
 
+class Counts(NamedTuple):
+    """Nonzero NB counts, column-major: (feature f, class c) is at c x len(features) + f."""
+    index: Any
+    values: Any
+
+
+def sparse_counts(dense):
+    """Counts of a (features, classes) matrix."""
+    flat = np.asarray(dense).T.ravel()
+    index = np.flatnonzero(flat)
+    return Counts(index, flat[index])
+
+
 class Model(NamedTuple):
-    ptc: Any        # (features, classes) NB log-probabilities
+    counts: Counts  # NB counts, COUNT_FLOOR applied
     pc: Any         # log priors
     classes: list   # column labels; aliases repeat
-    nextmove: Any   # distinct 256-entry DFA rows, flat
-    row: Any        # state → row
-    output: list    # state → feature or -1
+    features: list  # byte n-grams, one per counts row
     words: WordTable
 
 
-def _narrow(arr):
-    """Unsigned ints as uint16 when they fit, else uint32."""
-    arr = np.asarray(arr)
-    return arr.astype(np.uint16 if not arr.size or arr.max() < 1 << 16 else np.uint32)
+def _escaped(a):
+    """uint8 codes, 255 marks the next value of the uint32 escape list."""
+    return np.minimum(a, 255).astype(np.uint8), a[a >= 255].astype(np.uint32)
 
 
-def _canonical_rows(rows, row_index):
-    """Sort transition rows for reproducibility. Returns (flat rows, state → row)."""
-    uniq, index = np.unique(np.asarray(rows).reshape(-1, 256), axis=0,
-                            return_inverse=True)
-    return _narrow(uniq.ravel()), _narrow(index.ravel()[np.asarray(row_index)])
+def _unescaped(codes, escapes):
+    a = codes.astype(np.int64)
+    a[codes == 255] = escapes
+    return a
 
 
 def save_model(path, model):
-    rows, row_index = _canonical_rows(model.nextmove, model.row)
-    out_feat = np.asarray(model.output, dtype=np.int32)
-    if len(out_feat) != len(row_index):
-        raise ValueError("one output slot per DFA state")
     n_classes = len(model.pc)
+    index = np.asarray(model.counts.index)
+    if index.size and index[-1] >= len(model.features) * n_classes:
+        raise ValueError("counts beyond the features x classes matrix")
+    gap, gap_x = _escaped(np.diff(index, prepend=-1))  # column-major: zero runs are long
+    val, val_x = _escaped(np.asarray(model.counts.values))
     arrays = {
-        "ptc": np.asarray(model.ptc, dtype=np.float16).reshape(-1, n_classes),
         "pc": np.asarray(model.pc, dtype=np.float32),
         "classes": np.array(model.classes),
-        "nextmove": rows,
-        "nextmove_row": row_index,
-        "out_feat": out_feat,
+        "nb_gap": gap, "nb_gap_x": gap_x, "nb_val": val, "nb_val_x": val_x,
+        "feat_bytes": np.frombuffer(b"".join(model.features), dtype=np.uint8),
+        "feat_len": np.array([len(f) for f in model.features], dtype=np.uint8),
     }
     words = model.words
     vals = np.asarray(words.vals, dtype=np.float64)
@@ -67,22 +75,17 @@ def save_model(path, model):
         step = np.log1p(vals.max()) / CREDIT_LEVELS
         vals = np.expm1(np.round(np.log1p(vals) / step) * step)
     scale = float(vals.max()) / 255 if vals.size else 1.0
+    q = np.round(vals / scale).astype(np.uint8)  # 8-bit credits
+    keep = q > 0  # zero credits score nothing, rows stay so lookups still match
     arrays["wt_vocab"] = np.frombuffer(words.vocab, dtype=np.uint8)
-    arrays["wt_indptr"] = np.asarray(words.indptr, dtype=np.int32)
-    arrays["wt_cols"] = np.asarray(words.cols, dtype=np.uint8 if n_classes <= 256 else np.int32)
-    arrays["wt_vals"] = np.round(vals / scale).astype(np.uint8)  # 8-bit credits
+    arrays["wt_indptr"] = np.concatenate(([0], np.cumsum(keep)))[np.asarray(words.indptr)].astype(np.int32)
+    arrays["wt_cols"] = np.asarray(words.cols, dtype=np.uint8 if n_classes <= 256 else np.int32)[keep]
+    arrays["wt_vals"] = q[keep]
     arrays["wt_scale"] = np.array([scale], dtype=np.float32)
     buffer = io.BytesIO()
     np.savez(buffer, **arrays)
     with open(path, "wb") as f:
         f.write(lzma.compress(buffer.getvalue(), preset=6))
-
-
-def _to_array(arr):
-    """_narrow output (uint16/uint32) → stdlib array('H'/'I')."""
-    out = array("H" if arr.dtype.itemsize == 2 else "I")
-    out.frombytes(memoryview(np.ascontiguousarray(arr)).cast("B"))
-    return out
 
 
 def load_model(path):
@@ -97,13 +100,16 @@ def load_model(path):
                              "retrain with py3langid.train.train")
         tmp.seek(0)
         with np.load(tmp, allow_pickle=False) as data:
-            missing = {"nextmove_row", "out_feat", "wt_vocab"}.difference(data.files)
+            missing = {"nb_gap", "feat_bytes", "wt_vocab"}.difference(data.files)
             if missing:
                 raise ValueError(
                     f"{path}: unsupported model layout, missing "
                     f"{sorted(missing)}; retrain with py3langid.train.train")
             words = WordTable(data["wt_vocab"].tobytes(), data["wt_indptr"], data["wt_cols"],
                               data["wt_vals"].astype(np.float32) * data["wt_scale"][0])
-            return Model(data["ptc"], data["pc"], data["classes"].tolist(),
-                         _to_array(data["nextmove"]), _to_array(data["nextmove_row"]),
-                         data["out_feat"].tolist(), words)
+            lens, blob = data["feat_len"].tolist(), data["feat_bytes"].tobytes()
+            ends = np.cumsum(lens, dtype=np.int64).tolist()
+            features = [blob[e - n:e] for e, n in zip(ends, lens)]
+            counts = Counts(np.cumsum(_unescaped(data["nb_gap"], data["nb_gap_x"])) - 1,
+                            _unescaped(data["nb_val"], data["nb_val_x"]))
+            return Model(counts, data["pc"], data["classes"].tolist(), features, words)

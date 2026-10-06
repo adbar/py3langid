@@ -6,15 +6,21 @@ History
 ------------------
 
 * New model: 2-word inputs +8 to +9 points (WiLI, OpenLID), CommonLID +2.3,
-  7.2 MB (was 4.6)
+  6.5 MB (was 4.6)
 * Token table: per-language word and CJK character credits for short input
+* Han character pairs as CJK markers: Wu +5 points (FLORES+)
+* Han pair bigrams between Chinese varieties: Mandarin +150 lines (CommonLID)
+* Latin runs dropped from Han-heavy input: fewer Mandarin lines read as Wu
 * Word tokens keep combining marks (Indic, Hebrew)
 * Chinese trained as two script classes folded into ``zh``
-* Input lowercased and space-padded, as in training
+* Input lowercased as in training, space-padded at inference
+* Invalid UTF-8 input lowercased too: all-caps Latin-1 1% to 99%
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
 * Training: one command gathers and cleans the corpus and writes
   ``MANIFEST.json``
 * Training: model-free cleaning (``clean``), ``verify`` removed
+* Training: n-gram features without counts dropped (10%)
+* Training: eval-set lines dropped (5k lines, OpenLID, WiLI, CommonLID)
 * Training: cleaner sources (wiki article leads, fewer topup sources, no
   FLORES-200 rows, pinned dataset revisions)
 

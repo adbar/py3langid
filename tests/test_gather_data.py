@@ -56,6 +56,17 @@ def test_write_docs(tmp_path):
     assert not (tmp_path / "stubs").exists()
 
 
+def test_gather_domain_skips_failing_lang(tmp_path, capsys):
+    def docs_of(lang):
+        if lang == "fr":
+            raise OSError("404")
+        return iter([b"d" * 600])
+
+    counts = writer.gather_domain("web", docs_of, ["de", "fr"], 1, tmp_path, max_docs=5)
+    assert counts == {"de": 1}
+    assert "web/fr: SKIP (404)" in capsys.readouterr().out
+
+
 def test_tatoeba_docs_pack_per_lang(tmp_path, monkeypatch):
     """tatoeba packs sentences per lang; docs then pass the validity gate like every source"""
     # two "languages": eng packs 1 long sentence per doc, deu 1 stub per doc

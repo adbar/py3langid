@@ -2,9 +2,12 @@
 import hashlib
 from pathlib import Path
 
+import numpy as np
+
 from py3langid.train import clean
+from py3langid.train import dedup as dedup_mod
 from py3langid.train.common import DOC_CAP, class_of, latin_majority
-from py3langid.train.dedup import dedup
+from py3langid.train.dedup import dedup, line_hash
 from py3langid.train.rules import (
     DOC_RULES,
     apply_rules,
@@ -121,6 +124,28 @@ def test_dedup(tmp_path):
     assert other.read_bytes() == line
     assert zxx.read_bytes().count(line) == 2
     assert dedup(tmp_path) == 0  # idempotent
+
+
+def test_dedup_drops_eval_lines(tmp_path, monkeypatch):
+    hashes = tmp_path / "eval.npy"
+    np.save(hashes, np.array([line_hash(b"Ein Satz aus dem Testset.")], dtype=np.uint64))
+    monkeypatch.setattr(dedup_mod, "EVAL_LINES", hashes)
+    (doc,) = (Path(p) for *_, p in write_corpus(tmp_path / "c", [("wiki", "de", b"Kept line\n EIN SATZ AUS DEM TESTSET. ")]))
+    assert dedup(tmp_path / "c") == 1  # matched after lowercasing and trimming
+    assert doc.read_bytes() == b"Kept line"
+
+
+def test_line_hash_undecodable():
+    assert line_hash(b"\xff\xfe EIN SATZ") == line_hash(b"\xff\xfe ein satz ")
+    assert line_hash(b"\xff\xfe ein satz") != line_hash(b"\xfe\xff ein satz")
+
+
+def test_eval_lines_shipped():
+    hashes = np.load(dedup_mod.EVAL_LINES)
+    assert hashes.dtype == np.uint64 and len(hashes) > 1000
+    assert (np.diff(hashes) > 0).all()
+    # an OpenLID ace test line: fails if line_hash or normalize drift, regenerate then
+    assert line_hash("We Bought a Zoo nakeuh filem nyang nèjih nibak kitab We Bought a Zoo.".encode()) in hashes
 
 
 def test_dedup_drops_docs_left_without_text(tmp_path):

@@ -34,6 +34,15 @@ def test_repo_configs_pinned(monkeypatch):
     assert seen == [topup.REVISION[topup.GLOTCC_REPO]]
 
 
+def test_glot_config_picks_the_class_script():
+    configs = {"cmn": {"cmn_Hans", "cmn_Hant"}, "uzn": {"uzn_Latn", "uzn_Cyrl"},
+               "deu": {"deu_Latn"}, "srp": {"srp_Cyrl", "srp_Latn"}, "fra": {"fra_Latn", "fra_Brai"}}
+    assert [topup._glot_config(configs, c) for c in ("zh", "zht", "uz", "uzc", "srl", "de")] == [
+        "cmn_Hans", "cmn_Hant", "uzn_Latn", "uzn_Cyrl", "srp_Latn", "deu_Latn"]
+    assert topup._glot_config(configs, "fr") is None  # ambiguous, no script preference
+    assert topup._glot_config(configs, "om") is None
+
+
 def test_needy_counts_domains_with_enough_docs(tmp_path):
     cells = [("wiki", "de", 50), ("cc100", "de", 50), ("leipzig", "de", 50),
              ("wiki", "arz", 300), ("tatoeba", "arz", 31), ("leipzig", "arz", 300)]
