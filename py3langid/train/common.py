@@ -12,11 +12,12 @@ from ..langid import normalize
 MAX_NGRAM_ORDER = 5
 MIN_NGRAM_ORDER = 2
 DF_TOKENS = 60000        # candidate pool per order
-FEATURES_PER_LANG = 1050 # per-language, not global (keeps script-novel langs viable)
-COUNT_FLOOR = 2          # NB counts at or below this are zeroed before smoothing
+FEATURES_PER_LANG = 1600 # per-language, not global (keeps script-novel langs viable)
+COUNT_FLOOR = 3          # NB counts at or below this are zeroed before smoothing
+CELL_COST = 3            # LD discount per share of classes above COUNT_FLOOR (model cells)
 DOC_CAP = 3000           # byte budget: gathering, tokenization, zxx
 MIN_DOC = 500
-NORMALIZE_VERSION = 6    # bump when normalize or the shard payload changes
+NORMALIZE_VERSION = 8    # bump when normalize or the shard payload changes
 
 SENT_SPLIT = re.compile(r"(?<=[.!?])(?:\s+|(?=[　-鿿＀-￯]))|(?<=[。！？।])")
 

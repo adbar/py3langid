@@ -1,5 +1,5 @@
 """Per-(domain, lang) tokenization shards, cached by content: n-gram, word and CJK
-character document frequencies."""
+character document frequencies, Han character and pair counts."""
 
 import hashlib
 import marshal
@@ -11,7 +11,7 @@ from operator import itemgetter
 
 import numpy as np
 
-from ..langid import CJK, TOKEN_RE
+from ..langid import CJK, HAN_PAIR_RE, HAN_RE, TOKEN_RE
 from .common import (
     DOC_CAP,
     MAX_NGRAM_ORDER,
@@ -36,13 +36,6 @@ def doc_ngrams(data, max_order):
     return terms
 
 
-def doc_tokens(text):
-    """(words, distinct CJK characters) of a doc."""
-    tokens = TOKEN_RE.findall(text)
-    cjk = {t for t in tokens if len(t) == 1 and CJK_RE.match(t)}
-    return [t for t in tokens if t not in cjk], cjk
-
-
 def _group_key(paths):
     """Cache key from doc metadata + tokenization constants."""
     h = hashlib.sha256()
@@ -64,18 +57,20 @@ def _build_shard(arg):
     except (OSError, EOFError, ValueError, TypeError):
         pass
 
-    docfreq, words, chars = Counter(), Counter(), Counter()
+    docfreq, words, chars, han = Counter(), Counter(), Counter(), Counter()
     for path in paths:
         data, text = read_doc(path, DOC_CAP)
         docfreq.update(doc_ngrams(data, MAX_NGRAM_ORDER))
-        w, c = doc_tokens(text)
-        words.update(set(w))
-        chars.update(c)
+        tokens, pairs = TOKEN_RE.findall(text), HAN_PAIR_RE.findall(text)
+        cjk = {t for t in tokens if len(t) == 1 and CJK_RE.match(t)}
+        words.update(set(tokens) - cjk)
+        chars.update(cjk | set(pairs))
+        han.update(HAN_RE.findall(text) + pairs)
 
     tmp_path = shard_path + '.tmp'
     with open(tmp_path, 'wb') as f:
         marshal.dump(key, f)
-        marshal.dump((dict(words), dict(chars), len(paths)), f)  # small part first: TOKENS skips docfreq
+        marshal.dump((dict(words), dict(chars), len(paths), dict(han)), f)  # small part first: TOKENS skips docfreq
         marshal.dump(dict(docfreq), f)
     os.replace(tmp_path, shard_path)
     return shard_path, True
@@ -97,7 +92,7 @@ TOKENS, DOCFREQ = 1, 2  # shard records after the key
 
 
 def load_shard(shard_path, part=DOCFREQ):
-    """TOKENS: (word df, CJK char df, doc count), DOCFREQ: term → document frequency."""
+    """TOKENS: (word df, CJK char df, doc count, Han counts), DOCFREQ: term → document frequency."""
     with open(shard_path, 'rb') as f:
         for _ in range(part):
             marshal.load(f)
