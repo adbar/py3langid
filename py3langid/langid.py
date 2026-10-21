@@ -75,7 +75,7 @@ HAN_PAIR_RE = re.compile(f"(?=([{HAN}]{{2}}))")  # overlapping Han pairs
 HAN_RE = re.compile(f"[{HAN}]")
 LATIN = r"a-z\u00C0-\u024F\u1E00-\u1EFF"  # input is lowercased
 LATIN_RE = re.compile(f"[{LATIN}]")
-LATIN_RUN_RE = re.compile(f"[{LATIN}0-9]+")
+LATIN_RUN_RE = re.compile(f"[{LATIN}0-9\\udc80-\\udcff]+")  # undecodable bytes go too
 LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
 
 

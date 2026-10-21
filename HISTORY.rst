@@ -6,10 +6,11 @@ History
 ------------------
 
 * New model: 2-word inputs +8 to +9 points (WiLI, OpenLID), CommonLID +2.3,
-  6.5 MB (was 4.6)
+  6.6 MB (was 4.6)
 * Token table: per-language word and CJK character credits for short input
 * Han character pairs as CJK markers: Wu +5 points (FLORES+)
-* Han pair bigrams between Chinese varieties: Mandarin +150 lines (CommonLID)
+* Han pair bigrams between Chinese varieties and Japanese: Mandarin +150 lines
+  (CommonLID)
 * Latin runs dropped from Han-heavy input: fewer Mandarin lines read as Wu
 * Word tokens keep combining marks (Indic, Hebrew)
 * Chinese trained as two script classes folded into ``zh``

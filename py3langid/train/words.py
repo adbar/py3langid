@@ -1,6 +1,6 @@
 """Token table: PMI credits for words over document frequencies, a fixed credit for
 CJK marker characters and Han pairs (PMI on dense CJK characters biases whole classes),
-Han pair bigram credits between the Chinese classes."""
+Han pair bigram credits between the Chinese classes and Japanese."""
 
 import math
 from collections import Counter, defaultdict
@@ -21,7 +21,7 @@ MARKER_WEIGHT = 10.0  # log-score credit per distinct marker character or pair
 PAIR_RATIO = 50  # Han pairs: at 20x topical pairs (上海, 香港) pass
 PAIR_MIN_DF = 20
 PMI_WEIGHT = 4.0  # multiplier on word PMI credits
-BIGRAM_CLASSES = ("zh", "zht", "yue", "wuu")
+BIGRAM_CLASSES = ("zh", "zht", "yue", "wuu", "ja")
 BIGRAM_ALPHA = 1000.0  # Dirichlet prior on the class character distribution
 BIGRAM_WEIGHT = 0.5
 BIGRAM_MIN_COUNT = 3  # pair occurrences over the bigram classes

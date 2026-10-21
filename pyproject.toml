@@ -70,4 +70,6 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "README.rst"]
+addopts = "--doctest-glob=README.rst"
+doctest_optionflags = "NUMBER"

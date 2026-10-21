@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from py3langid.dfa import build_dfa, byte_classes
+from py3langid.dfa import MAX_FEATURE_BYTES, build_dfa, byte_classes
 from py3langid.langid import HAN_PAIR_RE, normalize
 from py3langid.train import words as W
 from py3langid.train.common import MAX_NGRAM_ORDER, read_doc, walk_corpus
@@ -295,11 +295,24 @@ def test_build_dfa_longest_match(data):
 def test_build_dfa_random():
     rng = np.random.default_rng(0)
     for _ in range(20):
-        feats = sorted({bytes(rng.integers(97, 101, rng.integers(1, 6)).tolist()) for _ in range(30)})
+        feats = sorted({bytes(rng.integers(97, 101, rng.integers(1, MAX_FEATURE_BYTES + 1)).tolist())
+                        for _ in range(30)})
         dfa = build_dfa(feats)
         for _ in range(5):
             data = bytes(rng.integers(96, 102, 40).tolist())
             assert _walk(dfa, data) == longest_endings(feats, data)
+
+
+def test_build_dfa_full_width_keys():
+    """8-byte features over byte classes up to 255 fill every bit of the prefix key"""
+    feats = [bytes([b]) for b in range(256)] + [b"\xff" * 8, b"\xfe\xff" * 4, b"\xff" * 7 + b"\xfe"]
+    data = b"\xff" * 9 + b"\xfe" + b"\xfe\xff" * 5 + b"\x00\xff"
+    assert _walk(build_dfa(feats), data) == longest_endings(feats, data)
+
+
+def test_build_dfa_rejects_long_features():
+    with pytest.raises(ValueError, match="longer than"):
+        build_dfa([b"a" * (MAX_FEATURE_BYTES + 1)])
 
 
 def test_byte_classes():

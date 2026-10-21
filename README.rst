@@ -48,20 +48,21 @@ With Python
     >>> import py3langid as langid
 
     >>> langid.classify('This text is in English.')
-    ('en', -68.562286)
-    >>> langid.rank('This text is in English.')   # all languages, most likely first
+    ('en', -54.685669)
+    >>> langid.rank('This text is in English.')[:2]   # all languages, most likely first
+    [('en', -54.685669), ('nl', -115.939201)]
 
     >>> from py3langid.langid import LanguageIdentifier, MODEL_FILE
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True)
     >>> identifier.set_languages(['de', 'en', 'fr'])
     >>> identifier.classify('This should be enough text.')
-    ('en', 0.9999628)
+    ('en', 1.0)
 
     # abstention: return ('und', confidence) below a threshold
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True,
-    ...                                                min_confidence=0.2)
-    >>> identifier.classify('ok')
-    ('und', 0.0140845)
+    ...                                                min_confidence=0.5)
+    >>> identifier.classify('ovo je test')
+    ('und', 0.4317239)
 
 Input can be ``str`` or UTF-8 ``bytes``; input is NFC-normalized before
 classification and lowercased.
@@ -74,11 +75,11 @@ On the command-line
 
     # basic usage with probability normalization
     $ echo "This should be enough text." | langid -n
-    ('en', 0.9935992)
+    ('en', 1.0)
 
     # define a subset of target languages
     $ echo "This won't be recognized properly." | langid -n -l fr,it,tr
-    ('fr', 0.4838270)
+    ('it', 0.5943993)
 
 Run ``langid`` without input to get an interactive prompt, pipe text into it
 to classify a whole document, or add ``--line`` to classify each line

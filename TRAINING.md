@@ -41,7 +41,10 @@ also on its own:
 
 - `zxx` generates the not-a-language class.
 - `dedup` removes duplicate lines per language, and lines found in the
-  eval sets (hashes in `train/eval_lines.npy`, regenerate when sources change).
+  eval sets. `train/eval_lines.npy` holds the `line_hash` of corpus lines
+  matching a FLORES+, WiLI, OpenLID or CommonLID test line. It needs a rebuild
+  when sources or `normalize` change. The generator depends on the benchmark
+  harness, which is not part of the repo.
 - `rules` fixes sources that carry another language (`hbo`, `arz`, `yue`,
   `gom`, `xh`) and drops docs left under 500 bytes.
 
@@ -63,7 +66,7 @@ about a minute.
 - The word table adds PMI credits from document frequencies, so short input
   separates close languages (ms/id, bs/hr). Long words need more documents. Tokens keep combining marks, so Indic words stay
   whole. CJK marker characters and Han character pairs get a fixed credit.
-  Han pair bigram credits separate Mandarin, Cantonese and Wu.
+  Han pair bigram credits separate Mandarin, Cantonese, Wu and Japanese.
 
 ## Results
 
@@ -78,4 +81,4 @@ The harness is not in the repository.
 | 2-word prefixes | 76.27 | 85.37 | | |
 | Pre-fork langid.py | 91.21 | 88.41 | | |
 
-The model has 139 labels and 116,519 features, and weighs 6.5 MB.
+The model has 139 labels and 116,519 features, and weighs 6.6 MB.

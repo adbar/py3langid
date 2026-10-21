@@ -92,9 +92,10 @@ def test_han_pair_markers(identifier, monkeypatch, text, expected):
     assert identifier.classify(text)[0] == 'zh'
 
 
-@pytest.mark.parametrize('text,expected', [('我們需要', 'zh'), ('伊可以节省', 'wuu')])
+@pytest.mark.parametrize('text,expected', [('我們需要', 'zh'), ('伊可以节省', 'wuu'),
+                                           ('全米選手権', 'ja'), ('米国体操連盟', 'ja')])
 def test_han_bigrams(identifier, monkeypatch, text, expected):
-    """marker-free pairs: the bigram credits decide these"""
+    """the bigram credits decide these"""
     assert identifier.classify(text)[0] == expected
     monkeypatch.setattr(mod, 'HAN_PAIR_RE', re.compile('(?!)'))
     assert identifier.classify(text)[0] != expected
@@ -111,6 +112,7 @@ def test_latin_in_han_text(identifier, monkeypatch):
     vi = '越南总理范明政今天在河内表示 ({}) 将继续推动改革'
     assert identifier.rank(vi.format('Phạm Minh Chính')) == identifier.rank(vi.format('Pham Minh Chinh'))
     assert identifier.classify(b'\xff' + text.encode())[0] == 'zh'
+    assert identifier.rank(b'\xff' + text.encode()) == identifier.rank(text)  # undecodable bytes go too
     monkeypatch.setattr(mod, 'HAN_RE', re.compile('(?!)'))
     assert identifier.classify(text)[0] == 'wuu'
     assert identifier.classify(b'\xff' + text.encode())[0] == 'wuu'
@@ -329,8 +331,8 @@ def cli(monkeypatch):
         mod.main(argv)
         return out.getvalue()
 
+    monkeypatch.setattr(mod, 'IDENTIFIER', mod.IDENTIFIER)  # main() sets the module global: restored at teardown
     yield run
-    monkeypatch.setattr(mod, 'IDENTIFIER', None)  # main() sets the module global
 
 
 def test_main_argv_document_and_line_mode(cli):
