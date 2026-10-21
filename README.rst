@@ -48,9 +48,9 @@ With Python
     >>> import py3langid as langid
 
     >>> langid.classify('This text is in English.')
-    ('en', -54.685669)
+    ('en', -54.686)
     >>> langid.rank('This text is in English.')[:2]   # all languages, most likely first
-    [('en', -54.685669), ('nl', -115.939201)]
+    [('en', -54.686), ('nl', -115.939)]
 
     >>> from py3langid.langid import LanguageIdentifier, MODEL_FILE
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True)
@@ -62,7 +62,7 @@ With Python
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True,
     ...                                                min_confidence=0.5)
     >>> identifier.classify('ovo je test')
-    ('und', 0.4317239)
+    ('und', 0.432)
 
 Input can be ``str`` or UTF-8 ``bytes``; input is NFC-normalized before
 classification and lowercased.
