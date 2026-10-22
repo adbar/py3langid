@@ -127,8 +127,8 @@ def _process_file(path, dist=False):
 
 
 class LanguageIdentifier:
-    __slots__ = ['_dfa', '_dupes', '_first', '_groups', '_model', '_norm_probs',
-                 '_ptc', '_words', 'labels', 'min_confidence']
+    __slots__ = ['_dfa', '_groups', '_model', '_norm_probs', '_ptc', '_sel', '_words',
+                 'min_confidence']
 
     @classmethod
     def from_modelpath(cls, path, *args, **kwargs):
@@ -164,10 +164,14 @@ class LanguageIdentifier:
         unknown = wanted - self._groups.keys()
         if unknown:
             raise ValueError(f"Unknown language code(s): {unknown}")
-        self.labels = [c for c in self._groups if c in wanted]
-        cols = [self._groups[c] for c in self.labels]
-        self._first = np.array([g[0] for g in cols])
-        self._dupes = [(k, j) for k, g in enumerate(cols) for j in g[1:]]
+        labels = [c for c in self._groups if c in wanted]
+        cols = [self._groups[c] for c in labels]
+        dupes = [(k, j) for k, g in enumerate(cols) for j in g[1:]]
+        self._sel = (labels, np.array([g[0] for g in cols]), dupes)  # one store: thread-safe swap
+
+    @property
+    def labels(self):
+        return self._sel[0]
 
     def _raw_score(self, text):
         """NB log-posterior from the DFA walk's sparse feature counts, None if featureless."""
@@ -190,8 +194,9 @@ class LanguageIdentifier:
                            weights=np.concatenate([vals[s] for s in spans]),
                            minlength=len(self._model.pc))
 
-    def _decide(self, text):
-        """Scores in self.labels order, probabilities under norm_probs."""
+    def _decide(self, text, sel=None):
+        """Scores in *sel* label order, probabilities under norm_probs."""
+        labels, first, dupes = sel or self._sel
         data, decoded = normalize(text)
         han = len(HAN_RE.findall(decoded))
         if han and 0 < len(LATIN_RE.findall(decoded)) <= LATIN_STRIP_RATIO * han:
@@ -202,15 +207,15 @@ class LanguageIdentifier:
         credit = self._word_credit(decoded, han)
         if scores is None:
             if credit is None:  # featureless: uniform, or RAW_FLOOR raw
-                n = len(self.labels)
+                n = len(labels)
                 return np.full(n, 1 / n if self._norm_probs else RAW_FLOOR, dtype=np.float32)
             scores = credit.astype(np.float32)
         elif credit is not None:
             scores += credit
         if self._norm_probs:
             scores *= 1.0 / math.sqrt(len(text))  # T = sqrt(bytes)
-        out = scores[self._first]  # aliased label: best column, or summed as probability
-        for k, j in self._dupes:
+        out = scores[first]  # aliased label: best column, or summed as probability
+        for k, j in dupes:
             out[k] = np.logaddexp(out[k], scores[j]) if self._norm_probs else max(out[k], scores[j])
         if self._norm_probs:
             np.exp(out - out.max(), out=out)
@@ -219,16 +224,18 @@ class LanguageIdentifier:
 
     def classify(self, text):
         """Return *(language, confidence)* for *text* (str or UTF-8 bytes)."""
-        scores = self._decide(text)
+        sel = self._sel
+        scores = self._decide(text, sel)
         i = int(scores.argmax())
         conf = float(scores[i])
         if self.min_confidence is not None and conf < self.min_confidence:
             return 'und', conf
-        return self.labels[i], conf
+        return sel[0][i], conf
 
     def rank(self, text):
         """All languages by likelihood, best first."""
-        return sorted(zip(self.labels, self._decide(text).tolist()), key=itemgetter(1), reverse=True)
+        sel = self._sel
+        return sorted(zip(sel[0], self._decide(text, sel).tolist()), key=itemgetter(1), reverse=True)
 
 
 def _build_parser():
