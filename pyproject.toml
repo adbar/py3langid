@@ -65,9 +65,17 @@ langid = "py3langid.langid:main"
 # https://peps.python.org/pep-0735/ (installed by `uv sync` without extra flags)
 [dependency-groups]
 dev = [
-    "pytest",
-    "pytest-cov",
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.17.1",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "README.rst"]
+addopts = "--doctest-glob=README.rst"
+doctest_optionflags = "NUMBER"
+
+[[tool.mypy.overrides]]
+module = ["datasets", "huggingface_hub"]  # optional training dependencies
+ignore_missing_imports = true

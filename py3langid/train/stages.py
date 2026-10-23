@@ -5,8 +5,8 @@ from collections import defaultdict
 
 import numpy as np
 
-from ..langid import visit_counts
-from .common import DF_TOKENS, DOC_CAP, pmap_chunks, read_doc
+from ..dfa import build_dfa, visit_counts
+from .common import CELL_COST, COUNT_FLOOR, DF_TOKENS, DOC_CAP, pmap_chunks, read_doc
 
 
 def ngram_select(doc_count, tokens_per_order=DF_TOKENS):
@@ -73,33 +73,37 @@ def ld_weights(cm_lang, lang_dist, domain_ig):
 
 def select_LD_features(cm_lang, lang_dist, domain_ig, feats_per_lang):
     """Top feats_per_lang features per language by LD weight, among those present
-    in the language. Returns union of row indices."""
+    in the language. Positive weights are discounted by the share of classes with
+    DF above COUNT_FLOOR: each one costs a model cell. Returns union of row indices."""
     if feats_per_lang < 1:
         raise ValueError("feats_per_lang must be >= 1")
+    share = (cm_lang > COUNT_FLOOR).sum(1) / cm_lang.shape[1]
     selected = set()
     for j, weight in enumerate(ld_weights(cm_lang, lang_dist, domain_ig)):
         cand = np.flatnonzero(cm_lang[:, j])
-        selected.update(cand[np.argsort(weight[cand])[-feats_per_lang:]].tolist())
+        w = weight[cand]
+        score = np.where(w > 0, w / (1 + CELL_COST * share[cand]), w)
+        selected.update(cand[np.argsort(score)[-feats_per_lang:]].tolist())
     return selected
 
 
-def _feature_counts_chunk(nm, rowbase, out, n_feats, num_langs, chunk):
+def _feature_counts_chunk(dfa, n_feats, num_langs, chunk):
     counts = np.zeros((n_feats, num_langs), dtype=np.int64)
     for col, path in chunk:
-        visits = visit_counts(nm, rowbase, out, read_doc(path, DOC_CAP)[0])
+        visits = visit_counts(dfa, read_doc(path, DOC_CAP)[0])
         if visits:
             counts[list(visits), col] += np.fromiter(
                 visits.values(), dtype=np.int64, count=len(visits))
     return counts
 
 
-def feature_counts(items, tk_nextmove, tk_row, tk_output, n_feats, lang_index,
-                   jobs=1):
+def feature_counts(items, features, lang_index, jobs=1):
     """Per-(feature, lang) longest-match counts via DFA walk."""
+    dfa = build_dfa(features)
+    print(f"scanner: {len(dfa.output)} states, {sum(f >= 0 for f in dfa.output)} emitting")
     tasks = [(lang_index[lang], path) for _, lang, path in items]
-    counts = np.zeros((n_feats, len(lang_index)), dtype=np.int64)
-    rowbase = [r << 8 for r in tk_row]
+    counts = np.zeros((len(features), len(lang_index)), dtype=np.int64)
     for partial in pmap_chunks(_feature_counts_chunk, tasks, jobs,
-                               (tk_nextmove, rowbase, tk_output, n_feats, len(lang_index))):
+                               (dfa, len(features), len(lang_index))):
         counts += partial
     return counts

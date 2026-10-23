@@ -6,9 +6,8 @@ from collections import Counter
 
 import numpy as np
 
-from ..modelio import Model, save_model
+from ..modelio import Model, save_model, sparse_counts
 from .common import ALT_CLASS, COUNT_FLOOR, FEATURES_PER_LANG, walk_corpus
-from .scanner import build_scanner
 from .shards import build_shards, count_matrices, merge_docfreq
 from .stages import compute_IG, feature_counts, ngram_select, select_LD_features
 from .words import build_words
@@ -70,24 +69,22 @@ def main(argv=None):
     LDfeats = sorted(features[i] for i in LDidx)
     print(f'selected {len(LDfeats)} features')
 
-    tk_nextmove, tk_row, tk_output = build_scanner(LDfeats)
-    emitting = sum(f >= 0 for f in tk_output)
-    print(f"scanner: {len(tk_output)} states, {emitting} emitting, "
-          f"{len(tk_nextmove) // 256} distinct transition rows")
-
     nb_classes = [ALT_CLASS.get(lang, lang) for lang in langs]
     nb_pc = np.log(lang_dist)
 
     print("counting longest-match feature occurrences")
-    prod = feature_counts(items, tk_nextmove, tk_row, tk_output, len(LDfeats),
-                          lang_index, args.jobs)
+    prod = feature_counts(items, LDfeats, lang_index, args.jobs)
+    dead = (prod <= COUNT_FLOOR).all(1)  # DF picks that longer matches shadow
+    if dead.any():
+        LDfeats = [f for f, d in zip(LDfeats, dead) if not d]
+        print(f"dropping {int(dead.sum())} features without counts, recounting")
+        prod = feature_counts(items, LDfeats, lang_index, args.jobs)
     prod[prod <= COUNT_FLOOR] = 0  # thin evidence is noise and bulk
-    nb_ptc = np.log(1.0 + prod) - np.log(len(LDfeats) + prod.sum(0))  # add-one smoothed
 
     words = build_words(shard_items, lang_index)
     print(f"word table: {len(words.indptr) - 1} tokens, {len(words.cols)} entries")
 
-    model = Model(nb_ptc, nb_pc, nb_classes, tk_nextmove, tk_row, tk_output, words)
+    model = Model(sparse_counts(prod), nb_pc, nb_classes, LDfeats, words)
     npz_path = os.path.join(model_dir, 'model.npz.xz')
     save_model(npz_path, model)
     print(f"wrote model to {npz_path} ({os.path.getsize(npz_path)} bytes)")

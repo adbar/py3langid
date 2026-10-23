@@ -23,7 +23,7 @@ GLOT_SCRIPT = {"crh": "Latn", "gom": "Deva", "sr": "Cyrl", "srl": "Latn",
 GLOT_ISO3 = {"uz": "uzn"}
 PARTIAL = ".partial"  # marks a class dir whose stream failed
 
-_CONFIG_RE = re.compile(r"^[a-z]{3}([-_])[A-Z][a-z]{3}$")
+_CONFIG_RE = re.compile(r"[a-z]{3}[-_][A-Z][a-z]{3}")
 
 
 def _repo_configs(repo):
@@ -31,7 +31,7 @@ def _repo_configs(repo):
     configs = defaultdict(set)
     for f in list_repo_files(repo, repo_type="dataset", revision=REVISION[repo]):
         for comp in f.split("/"):
-            if _CONFIG_RE.match(comp):
+            if _CONFIG_RE.fullmatch(comp):
                 configs[comp[:3]].add(comp)
                 break
     return configs

@@ -6,12 +6,13 @@ import math
 import re
 import sys
 import unicodedata
-from collections import Counter
+from itertools import islice, pairwise
 from operator import itemgetter
 from pathlib import Path
 
 import numpy as np
 
+from .dfa import build_dfa, visit_counts
 from .modelio import load_model
 
 LOGGER = logging.getLogger(__name__)
@@ -30,7 +31,8 @@ def normalize(text):
             text = text.decode('utf8')
         except UnicodeDecodeError as e:
             if e.start < len(text) - 3:  # not fixable by trimming the tail
-                return text, text.decode('utf8', errors='replace')
+                text = unicodedata.normalize('NFC', text.decode('utf8', errors='surrogateescape').lower())
+                return text.encode('utf8', errors='surrogateescape'), text
             text = text[:e.start].decode('utf8')
     text = unicodedata.normalize('NFC', text.lower())
     return text.encode('utf8', errors='surrogatepass'), text
@@ -67,20 +69,38 @@ _MARKS = (
     r"\uAAB7-\uAAB8\uAABE-\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5-\uAAF6\uABE3-\uABEA\uABEC-\uABED"
     r"\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F"
 )
-TOKEN_RE = re.compile(f"[{CJK}]|[^\\W\\d_{CJK}](?:[^\\W\\d_{CJK}]|[{_MARKS}])*")
+_LETTER = rf"[^\W\d_{CJK}]"
+TOKEN_RE = re.compile(rf"[{CJK}]|{_LETTER}+(?:[{_MARKS}]+{_LETTER}*)*")
+HAN = r"\u3400-\u9FFF\uF900-\uFAFF"
+HAN_PAIR_RE = re.compile(rf"(?=([{HAN}]{{2}}))")  # overlapping Han pairs
+HAN_RE = re.compile(f"[{HAN}]")
+LATIN = r"a-z\u00C0-\u024F\u1E00-\u1EFF"  # input is lowercased
+LATIN_RE = re.compile(f"[{LATIN}]")
+LATIN_RUN_RE = re.compile(rf"[{LATIN}0-9\udc80-\udcff]+")  # undecodable bytes go too
+LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
+# training classes: zht exists only in train/, the model folds it into zh (ALT_CLASS)
+CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams, the strip runs only if one is selected
+SMALL_ROWS = 8  # word credits summed in Python up to this many known tokens
 
 
-def visit_counts(nm, rowbase, out, text):
-    """DFA-walk feature counts over bytes.
-    Shared by inference (_raw_score) and training (train.stages)."""
-    state, indexes = 0, []
-    append = indexes.append
-    for letter in text:
-        state = nm[rowbase[state] + letter]
-        f = out[state]
-        if f >= 0:
-            append(f)
-    return Counter(indexes)
+def log_probs(counts, n_features, n_classes):
+    """Add-one smoothed NB log-probabilities (features, classes) as float16, one class at a time."""
+    bounds = np.searchsorted(counts.index, np.arange(n_classes + 1) * n_features).tolist()
+    spans = list(pairwise(bounds))
+    log_total = np.log(n_features + np.array([counts.values[a:b].sum() for a, b in spans], dtype=np.int64))
+    ptc = np.empty((n_features, n_classes), dtype=np.float16)
+    ptc[:] = (-log_total).astype(np.float16)  # log(1 + 0) - log_total
+    for c, (a, b) in enumerate(spans):
+        ptc[counts.index[a:b] - c * n_features, c] = np.log(1.0 + counts.values[a:b]) - log_total[c]
+    return ptc
+
+
+def strip_latin(decoded, han):
+    """*decoded* minus Latin runs at 1 to LATIN_STRIP_RATIO letters per Han char (they pull zh to wuu), else None."""
+    cap = LATIN_STRIP_RATIO * han
+    if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
+        return LATIN_RUN_RE.sub('', decoded)
+    return None
 
 
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
@@ -119,8 +139,8 @@ def _process_file(path, dist=False):
 
 
 class LanguageIdentifier:
-    __slots__ = ['_all_labels', '_dupes', '_first', '_model', '_norm_probs',
-                 '_rowbase', '_sel', '_words', 'labels', 'min_confidence']
+    __slots__ = ['_dfa', '_groups', '_model', '_norm_probs', '_ptc', '_sel', '_words',
+                 'min_confidence']
 
     @classmethod
     def from_modelpath(cls, path, *args, **kwargs):
@@ -135,75 +155,89 @@ class LanguageIdentifier:
         if min_confidence is not None and not norm_probs:
             raise ValueError("min_confidence requires norm_probs=True")
         self.min_confidence = min_confidence
-        self._model = model
+        self._ptc = log_probs(model.counts, len(model.features), len(model.pc))
+        self._dfa = build_dfa(model.features)
+        self._model = model._replace(counts=None, features=None)  # ptc and the DFA replace them
         w = model.words
         index = {tok: i for i, tok in enumerate(w.vocab.decode('utf8').split('\n'))}
         self._words = (index, w.indptr, w.cols, w.vals)
-        self._rowbase = [r << 8 for r in model.row]  # pre-shifted row offsets
         self._norm_probs = norm_probs
-        groups = {}  # label -> columns
+        self._groups = {}  # label -> columns
         for i, c in enumerate(model.classes):
-            groups.setdefault(c, []).append(i)
-        self._all_labels = list(groups)
-        self._first = np.array([g[0] for g in groups.values()])
-        self._dupes = [(k, j) for k, g in enumerate(groups.values()) for j in g[1:]]
+            self._groups.setdefault(c, []).append(i)
         self.set_languages(None)
 
     def set_languages(self, langs=None):
         """Restrict classification to *langs* (ISO 639 codes), or reset to all."""
         LOGGER.debug("restricting languages to: %s", langs)
-        if langs is None:
-            self.labels, self._sel = self._all_labels, None
-        else:
-            if not langs:
-                raise ValueError("Empty language selection")
-            wanted = set(langs)
-            unknown = wanted - set(self._all_labels)
-            if unknown:
-                raise ValueError(f"Unknown language code(s): {unknown}")
-            self._sel = np.array([i for i, c in enumerate(self._all_labels) if c in wanted])
-            self.labels = [self._all_labels[i] for i in self._sel]
+        wanted = self._groups.keys() if langs is None else set(langs)
+        if not wanted:
+            raise ValueError("Empty language selection")
+        unknown = wanted - self._groups.keys()
+        if unknown:
+            raise ValueError(f"Unknown language code(s): {unknown}")
+        labels = [c for c in self._groups if c in wanted]
+        cols = [self._groups[c] for c in labels]
+        dupes = [(k, j) for k, g in enumerate(cols) for j in g[1:]]
+        strip = not set(CJK_CLASSES).isdisjoint(labels)
+        self._sel = (labels, np.array([g[0] for g in cols]), dupes, strip)  # one store: thread-safe swap
+
+    @property
+    def labels(self):
+        return self._sel[0]
 
     def _raw_score(self, text):
         """NB log-posterior from the DFA walk's sparse feature counts, None if featureless."""
-        visits = visit_counts(self._model.nextmove, self._rowbase, self._model.output, text)
+        visits = visit_counts(self._dfa, text)
         if not visits:
             return None
         idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
         counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
-        return np.log1p(counts) @ self._model.ptc[idx] + self._model.pc
+        return np.log1p(counts) @ self._ptc.take(idx, axis=0) + self._model.pc
 
-    def _word_credit(self, decoded):
+    def _word_credit(self, decoded, han):
         """Summed table credits over the distinct known tokens, per column."""
         index, indptr, cols, vals = self._words
-        rows = {index[w] for w in TOKEN_RE.findall(decoded) if w in index}
+        tokens = TOKEN_RE.findall(decoded) + (HAN_PAIR_RE.findall(decoded) if han else [])
+        rows = set(map(index.get, tokens))
+        rows.discard(None)
         if not rows:
             return None
-        spans = [slice(indptr[r], indptr[r + 1]) for r in rows]
-        return np.bincount(np.concatenate([cols[s] for s in spans]),
-                           weights=np.concatenate([vals[s] for s in spans]),
-                           minlength=len(self._model.pc))
+        if len(rows) <= SMALL_ROWS:  # numpy fixed costs dominate a few rows
+            out = np.zeros(len(self._model.pc))
+            for row in rows:  # entry by entry: a row can repeat a column (marker + bigram)
+                for j in range(indptr[row], indptr[row + 1]):
+                    out[cols[j]] += vals[j]
+            return out
+        r = np.fromiter(rows, dtype=np.intp, count=len(rows))
+        starts = indptr[r]
+        lens = indptr[r + 1] - starts
+        ends = np.cumsum(lens)
+        pos = np.arange(ends[-1]) + np.repeat(starts - ends + lens, lens)  # entries of the rows
+        return np.bincount(cols[pos], weights=vals[pos], minlength=len(self._model.pc))
 
-    def _decide(self, text):
-        """Scores in self.labels order, probabilities under norm_probs."""
+    def _decide(self, text, sel=None):
+        """Scores in *sel* label order, probabilities under norm_probs."""
+        labels, first, dupes, strip = sel or self._sel
         data, decoded = normalize(text)
+        han = len(HAN_RE.findall(decoded))
+        if strip and (stripped := strip_latin(decoded, han)) is not None:
+            decoded, data = stripped, stripped.encode('utf8', errors='surrogatepass')
         text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input
         scores = self._raw_score(text)
-        credit = self._word_credit(decoded)
-        if scores is None:  # featureless: credit from 0.0 (RAW_FLOOR would absorb it)
-            if self._norm_probs and credit is None:
-                return np.full(len(self.labels), 1 / len(self.labels), dtype=np.float32)
-            scores = np.full(len(self._model.pc), RAW_FLOOR if credit is None else 0.0,
-                             dtype=np.float32)
-        if credit is not None:
+        credit = self._word_credit(decoded, han)
+        if scores is None:
+            if credit is None:  # featureless: uniform, or RAW_FLOOR raw
+                n = len(labels)
+                return np.full(n, 1 / n if self._norm_probs else RAW_FLOOR, dtype=np.float32)
+            scores = credit.astype(np.float32)
+        elif credit is not None:
             scores += credit
         if self._norm_probs:
             scores *= 1.0 / math.sqrt(len(text))  # T = sqrt(bytes)
-        out = scores[self._first]  # aliased label: best column, or summed as probability
-        for k, j in self._dupes:
+        out = scores[first]  # aliased label: best column, or summed as probability
+        for k, j in dupes:
             out[k] = np.logaddexp(out[k], scores[j]) if self._norm_probs else max(out[k], scores[j])
-        if self._sel is not None:
-            out = out[self._sel]
         if self._norm_probs:
             np.exp(out - out.max(), out=out)
             out /= out.sum()
@@ -211,16 +245,18 @@ class LanguageIdentifier:
 
     def classify(self, text):
         """Return *(language, confidence)* for *text* (str or UTF-8 bytes)."""
-        scores = self._decide(text)
+        sel = self._sel
+        scores = self._decide(text, sel)
         i = int(scores.argmax())
         conf = float(scores[i])
         if self.min_confidence is not None and conf < self.min_confidence:
             return 'und', conf
-        return self.labels[i], conf
+        return sel[0][i], conf
 
     def rank(self, text):
         """All languages by likelihood, best first."""
-        return sorted(zip(self.labels, self._decide(text).tolist()), key=itemgetter(1), reverse=True)
+        sel = self._sel
+        return sorted(zip(sel[0], self._decide(text, sel).tolist()), key=itemgetter(1), reverse=True)
 
 
 def _build_parser():

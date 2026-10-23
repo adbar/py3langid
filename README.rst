@@ -10,6 +10,7 @@ It is a Naive Bayes classifier:
 - Byte n-gram features are selected by distinctiveness
 - Input bytes are scanned with a DFA to count features
 - Scoring is a single matrix product against per-class log probabilities
+- A table of per-language word credits helps on short input
 
 Original license: BSD-2-Clause. Fork license: BSD-3-Clause.
 
@@ -18,16 +19,16 @@ Original license: BSD-2-Clause. Fork license: BSD-3-Clause.
 Changes in this fork
 --------------------
 
-Execution speed has been improved and the code base has been modernized for Python 3.10+:
+The code base has been modernized for Python 3.10+. Compared with ``langid.py``:
 
-- Import: Loading the package (``import py3langid``) is about 25% faster
-- Execution: Language detection with ``langid.classify`` is 10x faster on single sentences and 3-4x faster on paragraphs (less on longer texts, about 1.4x at 100 kB)
-- Startup: Loading the default classification model is 2-3x faster, with a model six times larger
+- Import: ``import py3langid`` is about 20% faster
+- Execution: ``classify`` is 4 to 12x faster on short sentences and 1.5 to 2.5x faster on 300 characters. It breaks even between 1 and 3 kB. It is 1.4 to 2.6x slower at 100 kB
+- Startup: the default model loads about 10% faster (0.6 s)
 
 For implementation details see this blog post: `How to make language detection with langid.py faster <https://adrien.barbaresi.eu/blog/language-detection-langid-py-faster.html>`_.
 
-The fork also ships a retrained model covering **138 languages** (up from 97)
-and a fully rewritten, reproducible training pipeline (see `Training a model`_).
+The fork ships a retrained model covering **138 languages** (up from 97)
+and a reproducible training pipeline (see `Training a model`_).
 It ranks first on the test set of `CommonLID <https://github.com/commoncrawl/commonlid-eval>`_,
 a language identification benchmark built from Common Crawl web text.
 
@@ -37,8 +38,8 @@ For version history see the `changelog <https://github.com/adbar/py3langid/blob/
 Usage
 -----
 
-Install: ``pip install py3langid`` — use as ``import py3langid as langid``
-or on the command-line as ``langid``.
+Install with ``pip install py3langid``. Use it as ``import py3langid as langid``
+or on the command line as ``langid``.
 
 With Python
 ~~~~~~~~~~~
@@ -48,23 +49,24 @@ With Python
     >>> import py3langid as langid
 
     >>> langid.classify('This text is in English.')
-    ('en', -68.562286)
-    >>> langid.rank('This text is in English.')   # all languages, most likely first
+    ('en', -54.686)
+    >>> langid.rank('This text is in English.')[:2]   # all languages, most likely first
+    [('en', -54.686), ('nl', -115.939)]
 
     >>> from py3langid.langid import LanguageIdentifier, MODEL_FILE
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True)
     >>> identifier.set_languages(['de', 'en', 'fr'])
     >>> identifier.classify('This should be enough text.')
-    ('en', 0.9999628)
+    ('en', 1.0)
 
     # abstention: return ('und', confidence) below a threshold
     >>> identifier = LanguageIdentifier.from_modelpath(MODEL_FILE, norm_probs=True,
-    ...                                                min_confidence=0.2)
-    >>> identifier.classify('ok')
-    ('und', 0.0140845)
+    ...                                                min_confidence=0.5)
+    >>> identifier.classify('ovo je test')
+    ('und', 0.432)
 
-Input can be ``str`` or UTF-8 ``bytes``; input is NFC-normalized before
-classification and lowercased.
+Input can be ``str`` or UTF-8 ``bytes``. It is lowercased and NFC-normalized
+before classification.
 
 
 On the command-line
@@ -74,16 +76,15 @@ On the command-line
 
     # basic usage with probability normalization
     $ echo "This should be enough text." | langid -n
-    ('en', 0.9935992)
+    ('en', 1.0)
 
     # define a subset of target languages
     $ echo "This won't be recognized properly." | langid -n -l fr,it,tr
-    ('fr', 0.4838270)
+    ('it', 0.5943993330001831)
 
 Run ``langid`` without input to get an interactive prompt, pipe text into it
 to classify a whole document, or add ``--line`` to classify each line
-separately. See
-``langid --help`` for all options.
+separately. See ``langid --help`` for all options.
 
 
 Languages
@@ -115,8 +116,8 @@ the files in parallel, writing CSV to ``stdout``:
 .. code-block:: bash
 
     $ find corpus -name "*.txt" | langid -b
-    corpus/a.txt,en,-127.32
-    corpus/b.txt,de,-81.15
+    corpus/a.txt,en,-9078.8720703125
+    corpus/b.txt,de,-13344.197265625
 
 With ``-d``, the output is one CSV row per file with the full score
 distribution over all languages (one column per language).
@@ -126,8 +127,8 @@ Web service
 -----------
 
 ``langid -s`` serves language identification over HTTP (default port 9008).
-Use the ``langid`` console script; ``python -m py3langid.langid`` is not
-supported.
+Use the ``langid`` console script.
+``python -m py3langid.langid`` is not supported.
 Endpoints ``/detect`` and ``/rank`` accept GET, POST, and PUT:
 
 .. code-block:: bash
@@ -148,13 +149,12 @@ original ``langid.py`` are not supported.
 Training a model
 ----------------
 
-``python -m py3langid.train.train -m model_dir corpus_dir``, run from a
-clone of the repository (the training code is not part of the PyPI
-package) — see
+Run ``python -m py3langid.train.train -m model_dir corpus_dir`` from a clone
+of the repository, since the training code is not part of the PyPI package.
+Training is deterministic: the same corpus and settings reproduce the model
+byte for byte. See
 `TRAINING.md <https://github.com/adbar/py3langid/blob/master/TRAINING.md>`_
-for corpus layout, data gathering, hygiene, and pipeline design. Training
-is deterministic: the same corpus and settings reproduce the model byte for
-byte.
+for corpus layout, data gathering and pipeline design.
 
 
 Read more
