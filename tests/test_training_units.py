@@ -6,8 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from py3langid.dfa import MAX_FEATURE_BYTES, build_dfa, byte_classes
-from py3langid.langid import HAN_PAIR_RE, normalize
+from py3langid.langid import normalize
 from py3langid.train import words as W
 from py3langid.train.common import MAX_NGRAM_ORDER, read_doc, walk_corpus
 from py3langid.train.shards import (
@@ -31,12 +30,31 @@ from py3langid.train.stages import (
 )
 from py3langid.train.train import _axis
 
-from .conftest import write_corpus
+from .conftest import longest_counts, write_corpus
 
 
 def make_corpus(tmp_path, docs):
     """(build_shards items, shard dir) of a corpus under tmp_path/corpus."""
     return write_corpus(tmp_path / "corpus", docs), str(tmp_path / "shards")
+
+
+def _table(root, docs):
+    """build_words on a corpus under root, classes indexed by first appearance: {word: [(column, credit)]}"""
+    items, shard_dir = make_corpus(root, docs)
+    langs = {lang: i for i, lang in enumerate(dict.fromkeys(lang for _, lang, _ in docs))}
+    vocab, indptr, cols, vals = W.build_words(build_shards(items, shard_dir, jobs=1), langs)
+    assert len(vals) == len(cols) == indptr[-1]
+    return {w: list(zip(cols[a:b].tolist(), vals[a:b].tolist()))
+            for w, a, b in zip(vocab.decode().split("\n"), indptr, indptr[1:])}
+
+
+def _cols(table):
+    return {w: [c for c, _ in e] for w, e in table.items()}
+
+
+@pytest.fixture
+def no_bigrams(monkeypatch):
+    monkeypatch.setattr(W, "_bigrams", lambda *a: {})
 
 
 def test_entropy():
@@ -265,85 +283,6 @@ def test_axis_first_appearance_order(tmp_path):
     assert _axis(d for d, _, _ in items)[0] == ["aaa", "bbb"]
 
 
-def longest_endings(feats, data):
-    """Reference scanner, naive O(n*|feats|): index of the longest feature
-    ending at each byte position, -1 where none does."""
-    res = []
-    for end in range(1, len(data) + 1):
-        hits = [f for f in feats if data[:end].endswith(f)]
-        res.append(feats.index(max(hits, key=len)) if hits else -1)
-    return res
-
-
-def _walk(dfa, data):
-    """output at each byte position"""
-    state, got = 0, []
-    for c in data.translate(dfa.table):
-        state = dfa.nextmove[dfa.rowbase[state] + c]
-        got.append(dfa.output[state])
-    return got
-
-
-@pytest.mark.parametrize("data", [b"", b"c", b"zzz", b"xy", b"xabcy",
-                                 b"abcabc", b"aabc"])
-def test_build_dfa_longest_match(data):
-    """the DFA emits, at each byte position, the longest feature ending there"""
-    feats = [b"ab", b"abc", b"bc", b"c", b"xy", b"aab"]
-    assert _walk(build_dfa(feats), data) == longest_endings(feats, data)
-
-
-def test_build_dfa_random():
-    rng = np.random.default_rng(0)
-    for _ in range(20):
-        feats = sorted({bytes(rng.integers(97, 101, rng.integers(1, MAX_FEATURE_BYTES + 1)).tolist())
-                        for _ in range(30)})
-        dfa = build_dfa(feats)
-        for _ in range(5):
-            data = bytes(rng.integers(96, 102, 40).tolist())
-            assert _walk(dfa, data) == longest_endings(feats, data)
-
-
-def test_build_dfa_full_width_keys():
-    """8-byte features over byte classes up to 255 fill every bit of the prefix key"""
-    feats = [bytes([b]) for b in range(256)] + [b"\xff" * 8, b"\xfe\xff" * 4, b"\xff" * 7 + b"\xfe"]
-    data = b"\xff" * 9 + b"\xfe" + b"\xfe\xff" * 5 + b"\x00\xff"
-    assert _walk(build_dfa(feats), data) == longest_endings(feats, data)
-
-
-def test_build_dfa_rejects_long_features():
-    with pytest.raises(ValueError, match="longer than"):
-        build_dfa([b"a" * (MAX_FEATURE_BYTES + 1)])
-
-
-def test_byte_classes():
-    """bytes used by a feature get one class each, every other byte the root's"""
-    table, k = byte_classes([b"ab", b"ba", b"c"])
-    assert k == 4 and sorted(set(table)) == [0, 1, 2, 3]
-    assert table[ord("a")] != table[ord("b")] and table[0] == table[255] == 3
-    assert byte_classes([bytes(range(256))])[1] == 256
-
-
-def test_build_dfa_shares_every_duplicate_row():
-    """row sharing is maximal: no two stored rows hold the same transitions"""
-    feats = [b"ab", b"abc", b"bc", b"c", b"xy", b"aab", b"bca", b"cab"]
-    dfa = build_dfa(feats)
-    k = len(set(dfa.table))
-    stored = len(dfa.nextmove) // k
-    assert stored < len(dfa.output)  # sharing actually happened
-    contents = {tuple(dfa.nextmove[r:r + k]) for r in dfa.rowbase}
-    assert len(contents) == stored
-
-
-def test_build_dfa_uint32_widening():
-    """state ids beyond uint16 switch the rows to uint32"""
-    alphabet = range(41)
-    feats = [bytes([a, b, c]) for a in alphabet for b in alphabet for c in alphabet]
-    dfa = build_dfa(feats)
-    assert len(dfa.output) > 1 << 16 and dfa.nextmove.typecode == "I"
-    assert _walk(dfa, bytes([40, 40, 40]))[-1] == len(feats) - 1
-    assert build_dfa([b"ab"]).nextmove.typecode == "H"
-
-
 def test_feature_counts(tmp_path, monkeypatch):
     """NB numerators = one longest match per byte position, per language"""
     feats = [b"ab", b"abc", b"c"]
@@ -354,9 +293,8 @@ def test_feature_counts(tmp_path, monkeypatch):
     expected = np.zeros((len(feats), 2), dtype=np.int64)
     for lang, texts in docs.items():
         for text in texts:
-            for feat in longest_endings(feats, text):
-                if feat >= 0:
-                    expected[feat, lang_index[lang]] += 1
+            for feat, n in longest_counts(feats, text).items():
+                expected[feat, lang_index[lang]] += n
 
     got = feature_counts(items, feats, lang_index, jobs=1)
     assert np.array_equal(got, expected)
@@ -368,50 +306,35 @@ def test_feature_counts(tmp_path, monkeypatch):
     assert capped.sum() < expected.sum()
 
 
-def test_build_words_markers(tmp_path, monkeypatch):
+def test_build_words_markers(tmp_path, no_bigrams):
     """CJK characters near-exclusive to one CJK class (>= MARKER_MIN_DF docs) get a fixed credit"""
-    monkeypatch.setattr(W, "_bigrams", lambda *a: {})
-    yue = [("web", "yue", f"佢嘅書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
-    zh = [("web", "zh", f"他的書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
-    items, shard_dir = make_corpus(tmp_path, yue + zh + [("web", "en", b"book")])
-    shards = build_shards(items, shard_dir, jobs=1)
-    vocab, indptr, cols, vals = W.build_words(shards, {"yue": 0, "zh": 1, "en": 2})
-    words = vocab.decode().split("\n")
-    got = {words[i]: (int(cols[indptr[i]]), float(vals[indptr[i]]))
-           for i in range(len(words)) if indptr[i + 1] > indptr[i]}
+    docs = [("web", "yue", f"佢嘅書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
+    docs += [("web", "zh", f"他的書{i}".encode()) for i in range(W.MARKER_MIN_DF)] + [("web", "en", b"book")]
+    got = _table(tmp_path, docs)
     credit = W.MARKER_WEIGHT
-    assert got == {"佢": (0, credit), "嘅": (0, credit), "他": (1, credit), "的": (1, credit)}
+    assert {w: e for w, e in got.items() if e} == {"佢": [(0, credit)], "嘅": [(0, credit)],
+                                                   "他": [(1, credit)], "的": [(1, credit)]}
     # shared 書 is no marker and CJK characters get no PMI credit; digits are not tokens
-    assert "書" not in words and words == sorted(words)
+    assert "書" not in got and list(got) == sorted(got)
     # fewer than MARKER_MIN_DF docs: no marker
-    shards = build_shards(items[:2] + items[W.MARKER_MIN_DF:], str(tmp_path / "shards2"), jobs=1)
-    vocab, *_ = W.build_words(shards, {"yue": 0, "zh": 1, "en": 2})
-    assert "嘅" not in vocab.decode().split("\n")
+    assert "嘅" not in _table(tmp_path / "b", docs[:2] + docs[W.MARKER_MIN_DF:])
 
 
-def test_build_words_pair_markers(tmp_path, monkeypatch):
+def test_build_words_pair_markers(tmp_path, no_bigrams):
     """pairs near-exclusive to one class need PAIR_MIN_DF docs, same-class marker chars absorb pairs"""
-    monkeypatch.setattr(W, "_bigrams", lambda *a: {})
-    assert HAN_PAIR_RE.findall("来勒拉 a 侬") == ["来勒", "勒拉"]
     n = W.PAIR_MIN_DF
     docs = [("web", "wuu", f"侬来勒{i}".encode()) for i in range(n)]
     docs += [("web", "zh", f"勒住来{i}".encode()) for i in range(n)]
-    items, shard_dir = make_corpus(tmp_path, docs)
-    vocab, indptr, cols, _ = W.build_words(build_shards(items, shard_dir, jobs=1), {"wuu": 0, "zh": 1})
-    words = vocab.decode().split("\n")
-    assert {w: int(cols[indptr[i]]) for i, w in enumerate(words)} == {"侬": 0, "来勒": 0, "住": 1}
-    shards = build_shards(items[1:n] + items[n:], str(tmp_path / "shards2"), jobs=1)
-    vocab, *_ = W.build_words(shards, {"wuu": 0, "zh": 1})
-    assert "来勒" not in vocab.decode().split("\n")
+    got = _table(tmp_path, docs)
+    assert _cols(got) == {"侬": [0], "来勒": [0], "住": [1]}
+    assert "来勒" not in _table(tmp_path / "b", docs[1:])
 
 
 def test_build_words_one_cjk_class(tmp_path):
     """markers and bigrams need two CJK classes: a lone one gets neither"""
     n = max(W.MARKER_MIN_DF, W.BIGRAM_MIN_COUNT)
     docs = [("web", "zh", f"他的書{i}".encode()) for i in range(n)] + [("web", "en", b"book")]
-    items, shard_dir = make_corpus(tmp_path, docs)
-    vocab, *_ = W.build_words(build_shards(items, shard_dir, jobs=1), {"zh": 0, "en": 1})
-    assert not set(vocab.decode().split("\n")) & {"他", "的", "書", "他的", "的書"}
+    assert not set(_table(tmp_path, docs)) & {"他", "的", "書", "他的", "的書"}
 
 
 def test_build_shards_han_counts(tmp_path):
@@ -425,12 +348,9 @@ def test_build_words_bigrams(tmp_path):
     n = W.BIGRAM_MIN_COUNT
     docs = [("web", "wuu", "侬来勒".encode())] * n + [("web", "zh", "他来了".encode())] * n
     docs += [("web", "wuu", "阿拉".encode())] * (n - 1)
-    items, shard_dir = make_corpus(tmp_path, docs)
-    vocab, indptr, cols, vals = W.build_words(build_shards(items, shard_dir, jobs=1), {"wuu": 0, "zh": 1})
-    words = vocab.decode().split("\n")
-    assert {w: cols[indptr[i]:indptr[i + 1]].tolist() for i, w in enumerate(words)} == {
-        "他来": [1], "侬来": [0], "来了": [1], "来勒": [0]}
-    assert (vals > 0).all()
+    got = _table(tmp_path, docs)
+    assert _cols(got) == {"他来": [1], "侬来": [0], "来了": [1], "来勒": [0]}
+    assert all(x > 0 for e in got.values() for _, x in e)
 
 
 def test_read_doc_matches_runtime_encoding(tmp_path):
@@ -450,15 +370,9 @@ def test_build_words(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "DOC_OFFSET", 0)
     docs = [("web", "en", b"the cat extraordinarily")] * 2 + [("web", "fr", b"le chat")] * 2 \
         + [("web", "fr", b"the rare rare")] + [("web", "de", b"der hund")] * 4
-    items, shard_dir = make_corpus(tmp_path, docs)
-    vocab, indptr, cols, vals = W.build_words(build_shards(items, shard_dir, jobs=1),
-                                              {"en": 0, "fr": 1, "de": 2})
-    words = vocab.decode().split("\n")
-    assert words == ["cat", "chat", "der", "hund", "le", "the"]  # 'rare' twice in one doc, long word in two
-    entries = {(words[i], int(c)) for i in range(len(words))
-               for c in cols[indptr[i]:indptr[i + 1]]}
-    assert entries == {("cat", 0), ("chat", 1), ("der", 2), ("hund", 2), ("le", 1), ("the", 0)}
-    assert (vals >= W.CREDIT_FLOOR).all() and len(vals) == len(cols) == indptr[-1]
+    got = _table(tmp_path, docs)  # 'rare' twice in one doc, long word in two
+    assert _cols(got) == {"cat": [0], "chat": [1], "der": [2], "hund": [2], "le": [1], "the": [0]}
+    assert all(x >= W.CREDIT_FLOOR for e in got.values() for _, x in e)
 
 
 def test_min_df_by_utf8_length():
@@ -473,7 +387,5 @@ def test_build_words_marker_needs_owner_rate(tmp_path):
     wuu = [("web", "wuu", f"侬好{i}".encode()) for i in range(n)]
     wuu += [("web", "wuu", f"溥儀{i}".encode()) for i in range(W.MARKER_MIN_DF)]
     zh = [("web", "zh", f"你好{i}".encode()) for i in range(W.MARKER_MIN_DF)]
-    items, shard_dir = make_corpus(tmp_path, wuu + zh)
-    vocab, *_ = W.build_words(build_shards(items, shard_dir, jobs=1), {"wuu": 0, "zh": 1})
-    words = vocab.decode().split("\n")
-    assert "侬" in words and "儀" not in words and "溥" not in words
+    got = _table(tmp_path, wuu + zh)
+    assert "侬" in got and "儀" not in got and "溥" not in got

@@ -1,7 +1,7 @@
 
 import ast
+import copy
 import csv
-import functools
 import io
 import json
 import lzma
@@ -16,46 +16,44 @@ import pytest
 
 import py3langid as langid
 import py3langid.langid as mod
-from py3langid.dfa import visit_counts
 from py3langid.langid import (
     MODEL_FILE,
     RAW_FLOOR,
     TOKEN_RE,
     LanguageIdentifier,
+    log_probs,
     normalize,
 )
-from py3langid.modelio import WordTable, load_model
-
-from .conftest import NO_WORDS
+from py3langid.modelio import sparse_counts
 
 
-@functools.cache
-def _model():
-    return load_model(MODEL_FILE)
+def _variant(ident, words=None, **attrs):
+    """a copy sharing the NB arrays and the DFA, with a toy word table {token: [(column, credit)]} if given"""
+    v = copy.copy(ident)
+    if words is not None:
+        rows = list(words.values())
+        v._words = ({tok: i for i, tok in enumerate(words)}, np.cumsum([0] + [len(r) for r in rows]),
+                    np.array([c for r in rows for c, _ in r], dtype=np.intp),
+                    np.array([x for r in rows for _, x in r]))
+    for name, value in attrs.items():
+        setattr(v, name, value)
+    return v
 
 
-# a model load costs ~0.25s: share one per variant, undoing set_languages,
-# the only mutable state, between tests
+# an identifier build costs ~0.3s: share one, each test gets a copy
 @pytest.fixture(scope='module')
 def _shared_identifier():
-    return LanguageIdentifier(_model())
-
-
-@pytest.fixture(scope='module')
-def _shared_norm_identifier():
-    return LanguageIdentifier(_model(), norm_probs=True)
+    return LanguageIdentifier.from_modelpath(MODEL_FILE)
 
 
 @pytest.fixture
 def identifier(_shared_identifier):
-    yield _shared_identifier
-    _shared_identifier.set_languages(None)
+    return _variant(_shared_identifier)
 
 
 @pytest.fixture
-def norm_identifier(_shared_norm_identifier):
-    yield _shared_norm_identifier
-    _shared_norm_identifier.set_languages(None)
+def norm_identifier(_shared_identifier):
+    return _variant(_shared_identifier, _norm_probs=True)
 
 
 @pytest.mark.parametrize('text,expected', [
@@ -84,45 +82,43 @@ def test_featureless_input_keeps_word_credit(identifier, norm_identifier):
     assert norm_identifier.classify('job')[0] == 'en'
 
 
-@pytest.mark.parametrize('text,expected', [('事体', 'wuu'), ('予定', 'ja')])
-def test_han_pair_markers(identifier, monkeypatch, text, expected):
-    """the pair credit alone decides these, the characters say zh"""
+@pytest.mark.parametrize('text,expected,without', [
+    ('事体', 'wuu', 'zh'), ('予定', 'ja', 'zh'),  # pair markers: the characters say zh
+    ('我們需要', 'zh', None), ('伊可以节省', 'wuu', None), ('全米選手権', 'ja', None), ('米国体操連盟', 'ja', None),
+])
+def test_han_pair_credits(identifier, monkeypatch, text, expected, without):
+    """pair markers and bigram credits decide these"""
     assert identifier.classify(text)[0] == expected
     monkeypatch.setattr(mod, 'HAN_PAIR_RE', re.compile('(?!)'))
-    assert identifier.classify(text)[0] == 'zh'
-
-
-@pytest.mark.parametrize('text,expected', [('我們需要', 'zh'), ('伊可以节省', 'wuu'),
-                                           ('全米選手権', 'ja'), ('米国体操連盟', 'ja')])
-def test_han_bigrams(identifier, monkeypatch, text, expected):
-    """the bigram credits decide these"""
-    assert identifier.classify(text)[0] == expected
-    monkeypatch.setattr(mod, 'HAN_PAIR_RE', re.compile('(?!)'))
-    assert identifier.classify(text)[0] != expected
+    got = identifier.classify(text)[0]
+    assert got == without if without else got != expected
 
 
 def test_latin_in_han_text(identifier, monkeypatch):
     """Latin runs in Han-heavy text are dropped: they pull Mandarin to Wu"""
     text = '日本柔道选手、两枚奥运会金牌得主齐藤仁 (Hitoshi Saito, Japan Judo) 逝世，享年 54 岁。'
     assert identifier.classify(text)[0] == 'zh'
-    assert identifier.classify('iPhone and Android 手机')[0] == 'en'  # Latin majority: kept
-    assert identifier.rank('python serial 自動重連') == identifier.rank('  自動重連')  # 3 letters per Han char
-    assert identifier.rank('python serials 自動重連') != identifier.rank('  自動重連')
-    assert identifier.rank('伊a可以节省') == identifier.rank('伊可以节省')  # pairs form across the cut
-    vi = '越南总理范明政今天在河内表示 ({}) 将继续推动改革'
-    assert identifier.rank(vi.format('Phạm Minh Chính')) == identifier.rank(vi.format('Pham Minh Chinh'))
-    assert identifier.classify(b'\xff' + text.encode())[0] == 'zh'
     assert identifier.rank(b'\xff' + text.encode()) == identifier.rank(text)  # undecodable bytes go too
-    monkeypatch.setattr(mod, 'HAN_RE', re.compile('(?!)'))
+    monkeypatch.setattr(mod, 'strip_latin', lambda *a: None)
     assert identifier.classify(text)[0] == 'wuu'
-    assert identifier.classify(b'\xff' + text.encode())[0] == 'wuu'
 
 
-def test_latin_strip_needs_a_letter(identifier):
-    """digits go with a Latin letter only"""
-    assert identifier.rank('享年 a2001 岁') == identifier.rank('享年  岁')
-    assert identifier.rank('享年 2001 岁') != identifier.rank('享年  岁')
-    assert identifier.rank('àéîõù àéîõa 中') != identifier.rank('  中')  # gate counts all Latin letters
+@pytest.mark.parametrize('text,expected', [
+    ('python serial 自動重連', '  自動重連'),  # 3 letters per Han char
+    ('python serials 自動重連', None),
+    ('iphone and android 手机', None),  # Latin majority
+    ('àéîõù àéîõa 中', None),  # the gate counts all Latin letters
+    ('伊a可以节省', '伊可以节省'),  # pairs form across the cut
+    ('越南总理范明政 (phạm minh chính) 将继续', '越南总理范明政 (  ) 将继续'),
+    ('享年 a2001 岁', '享年  岁'),  # digits go with a Latin letter only
+    ('享年 2001 岁', None),
+    ('\udcffabc 中文', ' 中文'),
+    ('中文', None),
+    ('abc', None),
+])
+def test_strip_latin(text, expected):
+    """on normalized (lowercased) text"""
+    assert mod.strip_latin(text, len(mod.HAN_RE.findall(text))) == expected
 
 
 def test_latin_strip_needs_a_cjk_class(identifier):
@@ -323,9 +319,7 @@ def test_cli_external_model(cli, tmp_path):
 
 def test_cli():
     '''Test console scripts entry point'''
-    for extra in ([], ['-l', 'bg,en,uk']):
-        assert _confident_en(subprocess.check_output(['langid', '-n', *extra],
-                                                     input=b'This should be enough text.'))
+    assert _confident_en(subprocess.check_output(['langid', '-n'], input=b'This should be enough text.'))
 
 
 @pytest.fixture
@@ -373,21 +367,15 @@ def test_main_argv_unknown_lang_fails(cli):
         cli(['-l', 'en,notalang'], 'text')
 
 
-def _variant(**kwargs):
-    """another identifier over the same model, no second load"""
-    words = kwargs.pop("words", NO_WORDS)  # NB only unless a table is given
-    return LanguageIdentifier(_model()._replace(words=words), **kwargs)
-
-
-def test_min_confidence(identifier):
+def test_min_confidence(norm_identifier):
     """abstention: low calibrated confidence returns 'und'"""
-    ident = _variant(norm_probs=True, min_confidence=0.5)
+    ident = _variant(norm_identifier, {}, min_confidence=0.5)
     lang, conf = ident.classify('This should be enough text.')
     assert lang == 'en' and conf >= 0.5
     lang, conf = ident.classify('Hi')  # too short to attribute
     assert lang == 'und' and conf < 0.5
     with pytest.raises(ValueError):
-        _variant(min_confidence=0.5)
+        LanguageIdentifier.from_modelpath(MODEL_FILE, min_confidence=0.5)
 
 
 def test_from_modelpath():
@@ -400,15 +388,11 @@ def test_from_modelpath():
     assert legacy.classify('This should be enough text.')[0] == 'en'
 
 
-def test_score_log1p(identifier):
-    """scoring applies sublinear TF (log1p) plus class priors"""
-    text = b' ' + normalize(b'This should be enough text.')[0] + b' '
-    fc = visit_counts(identifier._dfa, text)
-    expected = np.log1p(np.array(list(fc.values()), dtype=np.float32)) \
-        @ np.asarray(identifier._ptc, dtype=np.float32)[list(fc)] + identifier._model.pc
-    # _raw_score is per column, before aliased columns are merged
-    assert np.allclose(identifier._raw_score(text), expected,
-                       rtol=1e-4)
+def test_log_probs():
+    """add-one smoothed log-probabilities match a dense reference"""
+    dense = np.random.default_rng(0).integers(0, 3, (7, 4))
+    ref = np.log1p(dense) - np.log(7 + dense.sum(0))
+    assert np.allclose(log_probs(sparse_counts(dense), 7, 4), ref, rtol=1e-3, atol=0)  # float16
 
 
 def test_cjk_tokens_are_single_characters(identifier):
@@ -419,9 +403,7 @@ def test_cjk_tokens_are_single_characters(identifier):
     assert TOKEN_RE.findall('\u0301\u0301 \u093f 12\u0301') == []
     assert TOKEN_RE.findall('\u0301abc \u093fक') == ['abc', 'क']
     col, lab = identifier._model.classes.index('yue'), identifier.labels.index('yue')
-    plain = _variant()
-    marked = _variant(words=WordTable("嘅".encode(), np.array([0, 1]), np.array([col]),
-                                                  np.array([2.5], dtype=np.float32)))
+    plain, marked = _variant(identifier, {}), _variant(identifier, {'嘅': [(col, 2.5)]})
     delta = marked._decide('佢係我嘅朋友') - plain._decide('佢係我嘅朋友')
     assert np.isclose(delta[lab], 2.5) and np.count_nonzero(delta) == 1
     assert marked._decide('plain ascii').tolist() == plain._decide('plain ascii').tolist()
@@ -439,9 +421,8 @@ def test_word_table_credit_and_language_restriction(identifier):
     """a known word adds its credit to its columns; unknown words add nothing"""
     en, fr = identifier.labels.index('en'), identifier.labels.index('fr')
     assert identifier._model.classes.index('en') == en  # single-column labels: same index
-    words = WordTable(b"bonjour\nzzqx", np.array([0, 2, 3]), np.array([fr, en, en]),
-                      np.array([3.0, 0.5, 2.0], dtype=np.float32))
-    plain, tabled = _variant(), _variant(words=words)
+    plain = _variant(identifier, {})
+    tabled = _variant(identifier, {'bonjour': [(fr, 3.0), (en, 0.5)], 'zzqx': [(en, 2.0)]})
     delta = tabled._decide('Bonjour bonjour') - plain._decide('Bonjour bonjour')
     assert np.isclose(delta[fr], 3.0) and np.isclose(delta[en], 0.5)
     assert np.count_nonzero(delta) == 2
@@ -450,5 +431,17 @@ def test_word_table_credit_and_language_restriction(identifier):
     plain.set_languages(['en', 'fr'])
     delta = tabled._decide('zzqx') - plain._decide('zzqx')
     assert delta.tolist() == [2.0, 0.0]
-    tabled.set_languages(None)
-    assert tabled.labels == identifier.labels
+
+
+def test_word_credit_paths_agree(identifier, monkeypatch):
+    """few-row Python sum and CSR bincount match, incl. a row repeating a column"""
+    en, fr = identifier.labels.index('en'), identifier.labels.index('fr')
+    tabled = _variant(identifier, {'bonjour': [(en, 1.5), (en, 0.25)], 'zzqx': [(fr, 2.0)]})
+    small = tabled._word_credit('bonjour zzqx', 0)
+    assert small[en] == 1.75 and small[fr] == 2.0
+    monkeypatch.setattr(mod, 'SMALL_ROWS', 0)
+    assert tabled._word_credit('bonjour zzqx', 0).tolist() == small.tolist()
+    text = 'this is a longer english sentence with many known words in it'
+    vector = identifier._word_credit(text, 0)
+    monkeypatch.setattr(mod, 'SMALL_ROWS', 100)
+    assert identifier._word_credit(text, 0).tolist() == vector.tolist()

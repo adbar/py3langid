@@ -18,7 +18,7 @@ History
 * Invalid UTF-8 input lowercased too: all-caps Latin-1 1% to 99%
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
 * ``set_languages`` thread-safe, ``labels`` read-only
-* faster classification (~5%)
+* faster classification (~5%, 2-word input ~20%)
 * Training: one command gathers and cleans the corpus and writes
   ``MANIFEST.json``
 * Training: model-free cleaning (``clean``), ``verify`` removed

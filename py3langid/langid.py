@@ -80,6 +80,7 @@ LATIN_RUN_RE = re.compile(rf"[{LATIN}0-9\udc80-\udcff]+")  # undecodable bytes g
 LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
 # training classes: zht exists only in train/, the model folds it into zh (ALT_CLASS)
 CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams, the strip runs only if one is selected
+SMALL_ROWS = 8  # word credits summed in Python up to this many known tokens
 
 
 def log_probs(counts, n_features, n_classes):
@@ -92,6 +93,14 @@ def log_probs(counts, n_features, n_classes):
     for c, (a, b) in enumerate(spans):
         ptc[counts.index[a:b] - c * n_features, c] = np.log(1.0 + counts.values[a:b]) - log_total[c]
     return ptc
+
+
+def strip_latin(decoded, han):
+    """*decoded* minus Latin runs at 1 to LATIN_STRIP_RATIO letters per Han char (they pull zh to wuu), else None."""
+    cap = LATIN_STRIP_RATIO * han
+    if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
+        return LATIN_RUN_RE.sub('', decoded)
+    return None
 
 
 def _load_identifier(model_path=None, norm_probs=False, langs=None):
@@ -194,6 +203,12 @@ class LanguageIdentifier:
         rows.discard(None)
         if not rows:
             return None
+        if len(rows) <= SMALL_ROWS:  # numpy fixed costs dominate a few rows
+            out = np.zeros(len(self._model.pc))
+            for row in rows:  # entry by entry: a row can repeat a column (marker + bigram)
+                for j in range(indptr[row], indptr[row + 1]):
+                    out[cols[j]] += vals[j]
+            return out
         r = np.fromiter(rows, dtype=np.intp, count=len(rows))
         starts = indptr[r]
         lens = indptr[r + 1] - starts
@@ -206,10 +221,8 @@ class LanguageIdentifier:
         labels, first, dupes, strip = sel or self._sel
         data, decoded = normalize(text)
         han = len(HAN_RE.findall(decoded))
-        cap = LATIN_STRIP_RATIO * han
-        if strip and han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
-            decoded = LATIN_RUN_RE.sub('', decoded)  # Latin in Han text pulls Mandarin to Wu
-            data = decoded.encode('utf8', errors='surrogatepass')
+        if strip and (stripped := strip_latin(decoded, han)) is not None:
+            decoded, data = stripped, stripped.encode('utf8', errors='surrogatepass')
         text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input
         scores = self._raw_score(text)
         credit = self._word_credit(decoded, han)
