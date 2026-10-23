@@ -85,11 +85,8 @@ def build_dfa(features):
 def visit_counts(dfa, text):
     """Longest-match feature counts over bytes, for inference and training."""
     nm, rowbase, out = dfa.nextmove, dfa.rowbase, dfa.output
-    state, indexes = 0, []
-    append = indexes.append
-    for letter in text.translate(dfa.table):
-        state = nm[rowbase[state] + letter]
-        f = out[state]
-        if f >= 0:
-            append(f)
-    return Counter(indexes)
+    state = 0
+    counts = Counter([out[state := nm[rowbase[state] + letter]]
+                      for letter in text.translate(dfa.table)])
+    counts.pop(-1, None)  # no feature ends there
+    return counts

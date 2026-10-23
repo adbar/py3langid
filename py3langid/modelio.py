@@ -71,10 +71,11 @@ def save_model(path, model):
     }
     words = model.words
     vals = np.asarray(words.vals, dtype=np.float64)
+    scale = 1.0
     if vals.size:  # finer levels only cost bytes
         step = np.log1p(vals.max()) / CREDIT_LEVELS
         vals = np.expm1(np.round(np.log1p(vals) / step) * step)
-    scale = float(vals.max()) / 255 if vals.size else 1.0
+        scale = float(vals.max()) / 255
     q = np.round(vals / scale).astype(np.uint8)  # 8-bit credits
     keep = q > 0  # zero credits score nothing, rows stay so lookups still match
     arrays["wt_vocab"] = np.frombuffer(words.vocab, dtype=np.uint8)

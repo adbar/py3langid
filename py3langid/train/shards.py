@@ -62,7 +62,7 @@ def _build_shard(arg):
         data, text = read_doc(path, DOC_CAP)
         docfreq.update(doc_ngrams(data, MAX_NGRAM_ORDER))
         tokens, pairs = TOKEN_RE.findall(text), HAN_PAIR_RE.findall(text)
-        cjk = {t for t in tokens if len(t) == 1 and CJK_RE.match(t)}
+        cjk = {t for t in tokens if CJK_RE.match(t)}
         words.update(set(tokens) - cjk)
         chars.update(cjk | set(pairs))
         han.update(HAN_RE.findall(text) + pairs)

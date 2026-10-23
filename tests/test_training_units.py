@@ -162,7 +162,7 @@ def test_ngram_select_per_order_pool():
 
 @pytest.mark.parametrize("doc_cap,expected", [
     (3, [b"ab", b"bc"]),  # cap 3 sees only b"abc": b"cd" on is never tokenized
-    (0, [b"ab", b"bc", b"cd", b"de", b"ef"]),  # 0 = no cap
+    (-1, [b"ab", b"bc", b"cd", b"de", b"ef"]),  # -1 = no cap
 ])
 def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap,
                            expected):
@@ -370,7 +370,7 @@ def test_feature_counts(tmp_path, monkeypatch):
 
 def test_build_words_markers(tmp_path, monkeypatch):
     """CJK characters near-exclusive to one CJK class (>= MARKER_MIN_DF docs) get a fixed credit"""
-    monkeypatch.setattr(W, "BIGRAM_CLASSES", ())
+    monkeypatch.setattr(W, "_bigrams", lambda *a: {})
     yue = [("web", "yue", f"佢嘅書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
     zh = [("web", "zh", f"他的書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
     items, shard_dir = make_corpus(tmp_path, yue + zh + [("web", "en", b"book")])
@@ -391,7 +391,7 @@ def test_build_words_markers(tmp_path, monkeypatch):
 
 def test_build_words_pair_markers(tmp_path, monkeypatch):
     """pairs near-exclusive to one class need PAIR_MIN_DF docs, same-class marker chars absorb pairs"""
-    monkeypatch.setattr(W, "BIGRAM_CLASSES", ())
+    monkeypatch.setattr(W, "_bigrams", lambda *a: {})
     assert HAN_PAIR_RE.findall("来勒拉 a 侬") == ["来勒", "勒拉"]
     n = W.PAIR_MIN_DF
     docs = [("web", "wuu", f"侬来勒{i}".encode()) for i in range(n)]
@@ -403,6 +403,15 @@ def test_build_words_pair_markers(tmp_path, monkeypatch):
     shards = build_shards(items[1:n] + items[n:], str(tmp_path / "shards2"), jobs=1)
     vocab, *_ = W.build_words(shards, {"wuu": 0, "zh": 1})
     assert "来勒" not in vocab.decode().split("\n")
+
+
+def test_build_words_one_cjk_class(tmp_path):
+    """markers and bigrams need two CJK classes: a lone one gets neither"""
+    n = max(W.MARKER_MIN_DF, W.BIGRAM_MIN_COUNT)
+    docs = [("web", "zh", f"他的書{i}".encode()) for i in range(n)] + [("web", "en", b"book")]
+    items, shard_dir = make_corpus(tmp_path, docs)
+    vocab, *_ = W.build_words(build_shards(items, shard_dir, jobs=1), {"zh": 0, "en": 1})
+    assert not set(vocab.decode().split("\n")) & {"他", "的", "書", "他的", "的書"}
 
 
 def test_build_shards_han_counts(tmp_path):
@@ -431,6 +440,9 @@ def test_read_doc_matches_runtime_encoding(tmp_path):
     path.write_bytes(raw)
     assert read_doc(path) == normalize(raw)
     assert read_doc(path)[0] == b'\xc3\xbcn\xc3\xafcode mixed caf\xc3\xa9 \xd1\x8d\xd1\x82\xd0\xbe'
+    # cap <= 0 means no cap, a positive cap truncates
+    assert read_doc(path, 0) == read_doc(path, -1) == read_doc(path)
+    assert read_doc(path, 3)[0] == b'\xc3\xbcn'
 
 
 def test_build_words(tmp_path, monkeypatch):

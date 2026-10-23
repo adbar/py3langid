@@ -13,7 +13,7 @@ from .shards import TOKENS, load_shard
 ENTRY_MIN_DF = 2  # a class credit needs the word in this many of its docs
 DOC_OFFSET = 500  # docs added to every class total: damps thin-class credits
 CREDIT_FLOOR = 2.0
-MARKER_CLASSES = ("zh", "zht", "yue", "wuu", "ja")
+CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams
 MARKER_RATIO = 20  # owner's doc rate vs every other marker class
 MARKER_MIN_DF = 5
 MARKER_MIN_RATE = 0.01  # owner doc rate; a zero runner-up alone must not qualify
@@ -21,17 +21,13 @@ MARKER_WEIGHT = 10.0  # log-score credit per distinct marker character or pair
 PAIR_RATIO = 50  # Han pairs: at 20x topical pairs (上海, 香港) pass
 PAIR_MIN_DF = 20
 PMI_WEIGHT = 4.0  # multiplier on word PMI credits
-BIGRAM_CLASSES = ("zh", "zht", "yue", "wuu", "ja")
 BIGRAM_ALPHA = 1000.0  # Dirichlet prior on the class character distribution
 BIGRAM_WEIGHT = 0.5
 BIGRAM_MIN_COUNT = 3  # pair occurrences over the bigram classes
 
 
-def _markers(df, ndocs, lang_index):
+def _markers(df, ndocs, classes, lang_index):
     """{char or Han pair: column} for those near-exclusive to one marker class."""
-    classes = [c for c in MARKER_CLASSES if c in lang_index]
-    if len(classes) < 2:
-        return {}
     out = {}
     for ch in set().union(*(df[c] for c in classes)):
         ratio, min_df = (MARKER_RATIO, MARKER_MIN_DF) if len(ch) == 1 else (PAIR_RATIO, PAIR_MIN_DF)
@@ -44,11 +40,8 @@ def _markers(df, ndocs, lang_index):
     return {t: c for t, c in out.items() if len(t) == 1 or c not in (out.get(t[0]), out.get(t[1]))}
 
 
-def _bigrams(han, lang_index):
+def _bigrams(han, classes, lang_index):
     """{Han pair: [(column, credit)]}: log P(b|a,c) - log P(b|c), lowest class at 0."""
-    classes = [c for c in BIGRAM_CLASSES if c in lang_index]
-    if len(classes) < 2:
-        return {}
     uni = [Counter({t: n for t, n in han[c].items() if len(t) == 1}) for c in classes]
     bi = [Counter({t: n for t, n in han[c].items() if len(t) == 2}) for c in classes]
     ctx = [Counter() for _ in classes]
@@ -84,21 +77,22 @@ def build_words(shard_items, lang_index):
     for _, lang, shard_path in shard_items:
         words, chars, n, han_counts = load_shard(shard_path, TOKENS)
         word_df[lang].update(words)
-        df[lang].update(chars)
         ndocs[lang] += n
-        if lang in BIGRAM_CLASSES:
+        if lang in CJK_CLASSES:
+            df[lang].update(chars)
             han[lang].update(han_counts)
-    markers = _markers(df, ndocs, lang_index)
+    classes = [c for c in CJK_CLASSES if c in lang_index]
     n_all = sum(ndocs.values())
     total, keep = Counter(), set()
     for c in word_df.values():
         total.update(c)
         keep.update(w for w, n in c.items() if n >= _min_df(w))
     rows = defaultdict(list)  # token -> (class column, credit)
-    for ch, col in markers.items():
-        rows[ch].append((col, MARKER_WEIGHT))
-    for ab, entries in _bigrams(han, lang_index).items():
-        rows[ab].extend(entries)
+    if len(classes) >= 2:
+        for ch, col in _markers(df, ndocs, classes, lang_index).items():
+            rows[ch].append((col, MARKER_WEIGHT))
+        for ab, entries in _bigrams(han, classes, lang_index).items():
+            rows[ab].extend(entries)
     for lang in sorted(word_df, key=lang_index.get):  # deterministic CSR order
         c, col, log_docs = word_df[lang], lang_index[lang], math.log(ndocs[lang] + DOC_OFFSET)
         for w, n in c.items():

@@ -6,7 +6,7 @@ import math
 import re
 import sys
 import unicodedata
-from itertools import pairwise
+from itertools import islice, pairwise
 from operator import itemgetter
 from pathlib import Path
 
@@ -69,13 +69,14 @@ _MARKS = (
     r"\uAAB7-\uAAB8\uAABE-\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5-\uAAF6\uABE3-\uABEA\uABEC-\uABED"
     r"\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F"
 )
-TOKEN_RE = re.compile(f"[{CJK}]|[^\\W\\d_{CJK}](?:[^\\W\\d_{CJK}]|[{_MARKS}])*")
+_LETTER = rf"[^\W\d_{CJK}]"
+TOKEN_RE = re.compile(rf"[{CJK}]|{_LETTER}+(?:[{_MARKS}]+{_LETTER}*)*")
 HAN = r"\u3400-\u9FFF\uF900-\uFAFF"
-HAN_PAIR_RE = re.compile(f"(?=([{HAN}]{{2}}))")  # overlapping Han pairs
+HAN_PAIR_RE = re.compile(rf"(?=([{HAN}]{{2}}))")  # overlapping Han pairs
 HAN_RE = re.compile(f"[{HAN}]")
 LATIN = r"a-z\u00C0-\u024F\u1E00-\u1EFF"  # input is lowercased
 LATIN_RE = re.compile(f"[{LATIN}]")
-LATIN_RUN_RE = re.compile(f"[{LATIN}0-9\\udc80-\\udcff]+")  # undecodable bytes go too
+LATIN_RUN_RE = re.compile(rf"[{LATIN}0-9\udc80-\udcff]+")  # undecodable bytes go too
 LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
 
 
@@ -180,26 +181,30 @@ class LanguageIdentifier:
             return None
         idx = np.fromiter(visits.keys(), dtype=np.intp, count=len(visits))
         counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
-        return np.log1p(counts) @ self._ptc[idx] + self._model.pc
+        return np.log1p(counts) @ self._ptc.take(idx, axis=0) + self._model.pc
 
     def _word_credit(self, decoded, han):
         """Summed table credits over the distinct known tokens, per column."""
         index, indptr, cols, vals = self._words
         tokens = TOKEN_RE.findall(decoded) + (HAN_PAIR_RE.findall(decoded) if han else [])
-        rows = {index[w] for w in tokens if w in index}
+        rows = set(map(index.get, tokens))
+        rows.discard(None)
         if not rows:
             return None
-        spans = [slice(indptr[r], indptr[r + 1]) for r in rows]
-        return np.bincount(np.concatenate([cols[s] for s in spans]),
-                           weights=np.concatenate([vals[s] for s in spans]),
-                           minlength=len(self._model.pc))
+        r = np.fromiter(rows, dtype=np.intp, count=len(rows))
+        starts = indptr[r]
+        lens = indptr[r + 1] - starts
+        ends = np.cumsum(lens)
+        pos = np.arange(ends[-1]) + np.repeat(starts - ends + lens, lens)  # entries of the rows
+        return np.bincount(cols[pos], weights=vals[pos], minlength=len(self._model.pc))
 
     def _decide(self, text, sel=None):
         """Scores in *sel* label order, probabilities under norm_probs."""
         labels, first, dupes = sel or self._sel
         data, decoded = normalize(text)
         han = len(HAN_RE.findall(decoded))
-        if han and 0 < len(LATIN_RE.findall(decoded)) <= LATIN_STRIP_RATIO * han:
+        cap = LATIN_STRIP_RATIO * han
+        if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
             decoded = LATIN_RUN_RE.sub('', decoded)  # Latin in Han text pulls Mandarin to Wu
             data = decoded.encode('utf8', errors='surrogatepass')
         text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input

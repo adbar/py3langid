@@ -19,12 +19,12 @@ domains per language. Docs are capped at 3,000 bytes (`DOC_CAP`).
 
 | Domain  | Source                  | Docs    |
 |---------|-------------------------|---------|
-| wiki    | Wikipedia article leads | 112,824 |
+| wiki    | Wikipedia article leads | 112,788 |
 | leipzig | Leipzig news            |  29,856 |
-| cc100   | CommonCrawl             |  29,503 |
+| cc100   | CommonCrawl             |  29,498 |
 | tatoeba | user sentences          |  18,745 |
-| glotcc  | GlotCC-V1 (topup)       |  11,726 |
-| glot500 | Glot500 (topup)         |   1,391 |
+| glotcc  | GlotCC-V1 (topup)       |  11,709 |
+| glot500 | Glot500 (topup)         |   1,370 |
 
 `MANIFEST.json` records the settings and raw file hashes. The release used
 `--wiki-date 20260913`.
@@ -64,9 +64,10 @@ about a minute.
   `COUNT_FLOOR` are zeroed. Features left without counts are dropped and the
   rest recounted: longer matches shadow them.
 - The word table adds PMI credits from document frequencies, so short input
-  separates close languages (ms/id, bs/hr). Long words need more documents. Tokens keep combining marks, so Indic words stay
-  whole. CJK marker characters and Han character pairs get a fixed credit.
-  Han pair bigram credits separate Mandarin, Cantonese, Wu and Japanese.
+  separates close languages (ms/id, bs/hr). Long words need more documents.
+  Tokens keep combining marks, so Indic words stay whole.
+- Over Mandarin, Cantonese, Wu and Japanese, near-exclusive characters and
+  Han pairs get a fixed credit. Han pairs also get bigram credits.
 
 ## Results
 

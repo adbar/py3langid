@@ -67,10 +67,10 @@ def walk_corpus(root, skip_langs=()):
                     yield domain.name, lang_dir.name, str(doc)
 
 
-def read_doc(path, cap=0):
-    """(bytes, str) of a doc as the identifier scores it, truncated to cap (0 = no cap)."""
+def read_doc(path, cap=-1):
+    """(bytes, str) of a doc as the identifier scores it, truncated to cap (<= 0 = no cap)."""
     with open(path, "rb") as f:
-        return normalize(f.read(cap) if cap else f.read())
+        return normalize(f.read(cap if cap > 0 else -1))
 
 
 def cap_bytes(data, cap=DOC_CAP):

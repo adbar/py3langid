@@ -133,7 +133,6 @@ def test_han_pair_range():
     assert mod.HAN_PAIR_RE.findall('日の本') == []
 
 
-
 def test_unique_labels(identifier):
     """ALT_CLASS gives sr/uz/zh two columns each; the public view has one"""
     assert len(identifier._model.classes) > len(identifier.labels)
@@ -408,6 +407,9 @@ def test_cjk_tokens_are_single_characters(identifier):
     """a CJK character in the table is credited wherever it occurs; Latin words stay whole"""
     assert TOKEN_RE.findall('amazon嘅資料 ok') == ['amazon', '嘅', '資', '料', 'ok']
     assert TOKEN_RE.findall('परमेश्वर বাংলা בְּרֵאשִׁית') == ['परमेश्वर', 'বাংলা', 'בְּרֵאשִׁית']
+    # marks attach after a letter only: mark-only input has no token, a leading mark is dropped
+    assert TOKEN_RE.findall('\u0301\u0301 \u093f 12\u0301') == []
+    assert TOKEN_RE.findall('\u0301abc \u093fक') == ['abc', 'क']
     col, lab = identifier._model.classes.index('yue'), identifier.labels.index('yue')
     plain = _variant()
     marked = _variant(words=WordTable("嘅".encode(), np.array([0, 1]), np.array([col]),
