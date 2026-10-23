@@ -78,6 +78,8 @@ LATIN = r"a-z\u00C0-\u024F\u1E00-\u1EFF"  # input is lowercased
 LATIN_RE = re.compile(f"[{LATIN}]")
 LATIN_RUN_RE = re.compile(rf"[{LATIN}0-9\udc80-\udcff]+")  # undecodable bytes go too
 LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
+# training classes: zht exists only in train/, the model folds it into zh (ALT_CLASS)
+CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams, the strip runs only if one is selected
 
 
 def log_probs(counts, n_features, n_classes):
@@ -168,7 +170,8 @@ class LanguageIdentifier:
         labels = [c for c in self._groups if c in wanted]
         cols = [self._groups[c] for c in labels]
         dupes = [(k, j) for k, g in enumerate(cols) for j in g[1:]]
-        self._sel = (labels, np.array([g[0] for g in cols]), dupes)  # one store: thread-safe swap
+        strip = not set(CJK_CLASSES).isdisjoint(labels)
+        self._sel = (labels, np.array([g[0] for g in cols]), dupes, strip)  # one store: thread-safe swap
 
     @property
     def labels(self):
@@ -200,11 +203,11 @@ class LanguageIdentifier:
 
     def _decide(self, text, sel=None):
         """Scores in *sel* label order, probabilities under norm_probs."""
-        labels, first, dupes = sel or self._sel
+        labels, first, dupes, strip = sel or self._sel
         data, decoded = normalize(text)
         han = len(HAN_RE.findall(decoded))
         cap = LATIN_STRIP_RATIO * han
-        if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
+        if strip and han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
             decoded = LATIN_RUN_RE.sub('', decoded)  # Latin in Han text pulls Mandarin to Wu
             data = decoded.encode('utf8', errors='surrogatepass')
         text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input

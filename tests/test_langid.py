@@ -125,6 +125,14 @@ def test_latin_strip_needs_a_letter(identifier):
     assert identifier.rank('àéîõù àéîõa 中') != identifier.rank('  中')  # gate counts all Latin letters
 
 
+def test_latin_strip_needs_a_cjk_class(identifier):
+    """no strip without a CJK class in the selection"""
+    identifier.set_languages(['fr', 'en', 'de'])
+    assert identifier.classify('Bonjour mon ami 你好吗朋友们大家')[0] == 'fr'
+    identifier.set_languages(['fr', 'en', 'ja'])
+    assert identifier.rank('Bonjour mon ami 你好吗朋友们大家') == identifier.rank('   你好吗朋友们大家')
+
+
 def test_han_pair_range():
     """pairs of BMP Han only: no Ext B, radicals, CJK symbols or kana"""
     assert mod.HAN_PAIR_RE.findall('日本語') == ['日本', '本語']

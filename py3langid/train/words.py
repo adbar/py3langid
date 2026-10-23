@@ -7,13 +7,13 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
+from ..langid import CJK_CLASSES
 from ..modelio import WordTable
 from .shards import TOKENS, load_shard
 
 ENTRY_MIN_DF = 2  # a class credit needs the word in this many of its docs
 DOC_OFFSET = 500  # docs added to every class total: damps thin-class credits
 CREDIT_FLOOR = 2.0
-CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams
 MARKER_RATIO = 20  # owner's doc rate vs every other marker class
 MARKER_MIN_DF = 5
 MARKER_MIN_RATE = 0.01  # owner doc rate; a zero runner-up alone must not qualify
