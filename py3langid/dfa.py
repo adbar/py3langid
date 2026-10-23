@@ -2,84 +2,60 @@
 
 from array import array
 from collections import Counter
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import numpy as np
 
-MAX_FEATURE_BYTES = 8  # a prefix key packs one byte class per 8 bits of a uint64
-
 
 class DFA(NamedTuple):
-    table: bytes    # byte -> class, for bytes.translate
-    nextmove: Any   # one row of transitions per state with own edges, flat
-    rowbase: list   # state -> offset of its row
-    output: list    # state -> longest feature ending there, or -1
+    table: bytes     # byte -> class, for bytes.translate
+    nextmove: array  # one row of transitions per state with own edges, flat
+    rowbase: list    # state -> offset of its row
+    output: list     # state -> longest feature ending there, or -1
 
 
-def byte_classes(features):
-    """(translate table, class count). A byte used by a feature is its own class: every
-    state reached on it ends in that byte. Unused bytes share one class, always the root."""
-    used = sorted(set(b"".join(features)))
-    table = bytearray([len(used) % 256]) * 256
-    for c, b in enumerate(used):
-        table[b] = c
-    return bytes(table), len(used) + (len(used) < 256)
-
-
-def _to_array(arr):
-    """stdlib array, uint16 when the values fit, else uint32."""
-    code = "H" if arr.max(initial=0) < 1 << 16 else "I"
-    return array(code, arr.astype(code).tobytes())
+def byte_classes(data):
+    """(translate table, class count). A byte of *data* is its own class: every state
+    reached on it ends in that byte. Other bytes share one class, always the root."""
+    used = np.bincount(np.frombuffer(data, np.uint8), minlength=256) > 0
+    table = np.where(used, used.cumsum() - 1, used.sum()).astype(np.uint8).tobytes()
+    return table, max(table) + 1
 
 
 def build_dfa(features):
     """DFA emitting, at each byte, the index of the longest feature ending there."""
-    table, width = byte_classes(features)
+    joined = b"".join(features)
+    table, width = byte_classes(joined)
+    flat = np.frombuffer(joined.translate(table), dtype=np.uint8)
     lens = np.fromiter(map(len, features), dtype=np.int64, count=len(features))
-    depth = int(lens.max(initial=0))
-    if depth > MAX_FEATURE_BYTES:
-        raise ValueError(f"features longer than {MAX_FEATURE_BYTES} bytes")
-    lut = np.frombuffer(table, dtype=np.uint8).astype(np.uint64)
-    buf = np.zeros((len(features), depth), dtype=np.uint64)
-    buf[np.arange(depth) < lens[:, None]] = lut[np.frombuffer(b"".join(features), dtype=np.uint8)]
+    start = np.cumsum(lens) - lens
     # states numbered level by level: base[L] is the first state of depth L
-    keys, base = [np.zeros(1, np.uint64)], [0, 1]
-    parent, label, feat = [np.zeros(1, np.int64)], [np.zeros(1, np.int64)], [np.full(1, -1)]
-    run = np.zeros(len(features), dtype=np.uint64)  # prefix key of every feature
-    for L in range(1, depth + 1):
+    edges, base = [np.zeros(1, np.int64)], [0, 1]  # edge = parent * width + class
+    node = np.zeros(len(features), dtype=np.int64)  # state of every feature's prefix
+    for L in range(1, lens.max(initial=0) + 1):
         m = lens >= L
-        run = (run << np.uint64(8)) | buf[:, L - 1]
-        uk, inv = np.unique(run[m], return_inverse=True)
-        keys.append(uk)
-        parent.append(np.searchsorted(keys[L - 1], uk >> np.uint64(8)) + base[L - 1])
-        label.append((uk & np.uint64(255)).astype(np.int64))
-        own = np.full(len(uk), -1, dtype=np.int64)
-        ends = np.flatnonzero(lens[m] == L)
-        own[inv[ends]] = np.flatnonzero(m)[ends]
-        feat.append(own)
-        base.append(base[L] + len(uk))
-    parent, label, out = map(np.concatenate, (parent, label, feat))
-    has_child = np.zeros(base[-1], dtype=bool)
-    has_child[parent[1:]] = True
-    has_child[0] = True  # the root owns row 0
-    rowid = np.full(base[-1], -1, dtype=np.int64)
-    owners = np.flatnonzero(has_child)
-    rowid[owners] = np.arange(len(owners))
-    rows = np.zeros((len(owners), width), dtype=np.uint32)
+        edge, inv = np.unique(node[m] * width + flat[start[m] + L - 1], return_inverse=True)
+        edges.append(edge)
+        node[m] = base[L] + inv
+        base.append(base[L] + len(edge))
+    parent, label = np.divmod(np.concatenate(edges), width)
+    out = np.full(base[-1], -1, dtype=np.int64)
+    out[node] = np.arange(len(features))
+    has_child = np.bincount(parent, minlength=base[-1]) > 0  # parent[0] is 0: the root owns row 0
+    rowid = np.cumsum(has_child) - 1  # leaves take their fail's row below
+    code = "H" if base[-1] <= 1 << 16 else "I"
+    nextmove = array(code, [0]) * ((rowid[-1] + 1) * width)
+    rows = np.frombuffer(nextmove, dtype=code).reshape(-1, width)  # writes go to nextmove
     fail = np.zeros(base[-1], dtype=np.int64)
-    for L in range(depth + 1):
+    for L in range(len(base) - 1):
         s = np.arange(base[L], base[L + 1])
-        if L > 1:  # the row of fail[parent] is complete: its depth is at most L - 2
-            fail[s] = rows[rowid[fail[parent[s]]], label[s]]
+        fail[s] = rows[rowid[fail[parent[s]]], label[s]]  # read before this level's edges
+        rows[rowid[parent[s]], label[s]] = s
         out[s] = np.where(out[s] >= 0, out[s], out[fail[s]])
-        leaf = s[~has_child[s]]
-        rowid[leaf] = rowid[fail[leaf]]
+        rowid[s] = np.where(has_child[s], rowid[s], rowid[fail[s]])
         inner = s[has_child[s]]
         rows[rowid[inner]] = rows[rowid[fail[inner]]]
-        if L < depth:
-            kids = np.arange(base[L + 1], base[L + 2])
-            rows[rowid[parent[kids]], label[kids]] = kids
-    return DFA(table, _to_array(rows.ravel()), (rowid * width).tolist(), out.tolist())
+    return DFA(table, nextmove, (rowid * width).tolist(), out.tolist())
 
 
 def visit_counts(dfa, text):

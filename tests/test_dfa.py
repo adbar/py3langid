@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from py3langid.dfa import MAX_FEATURE_BYTES, build_dfa, byte_classes, visit_counts
+from py3langid.dfa import build_dfa, byte_classes, visit_counts
 
 from .conftest import longest_counts
 
@@ -17,7 +17,7 @@ def test_build_dfa_longest_match(data):
 def test_build_dfa_random():
     rng = np.random.default_rng(0)
     for _ in range(20):
-        feats = sorted({bytes(rng.integers(97, 101, rng.integers(1, MAX_FEATURE_BYTES + 1)).tolist())
+        feats = sorted({bytes(rng.integers(97, 101, rng.integers(1, 12)).tolist())
                         for _ in range(30)})
         dfa = build_dfa(feats)
         for _ in range(5):
@@ -25,24 +25,25 @@ def test_build_dfa_random():
             assert visit_counts(dfa, data) == longest_counts(feats, data)
 
 
-def test_build_dfa_full_width_keys():
-    """8-byte features over byte classes up to 255 fill every bit of the prefix key"""
-    feats = [bytes([b]) for b in range(256)] + [b"\xff" * 8, b"\xfe\xff" * 4, b"\xff" * 7 + b"\xfe"]
-    data = b"\xff" * 9 + b"\xfe" + b"\xfe\xff" * 5 + b"\x00\xff"
+def test_build_dfa_all_byte_classes():
+    """256 classes, no class left for unused bytes, and features past 8 bytes"""
+    feats = [bytes([b]) for b in range(256)] + [b"\xff" * 8, b"\xfe\xff" * 6, b"\xff" * 11 + b"\xfe"]
+    data = b"\xff" * 13 + b"\xfe" + b"\xfe\xff" * 7 + b"\x00\xff"
     assert visit_counts(build_dfa(feats), data) == longest_counts(feats, data)
 
 
-def test_build_dfa_rejects_long_features():
-    with pytest.raises(ValueError, match="longer than"):
-        build_dfa([b"a" * (MAX_FEATURE_BYTES + 1)])
+def test_build_dfa_empty_feature():
+    """the empty feature ends at every byte: it counts where no other feature does"""
+    feats, data = [b"", b"ab"], b"xaby"
+    assert visit_counts(build_dfa(feats), data) == longest_counts(feats, data)
 
 
 def test_byte_classes():
-    """bytes used by a feature get one class each, every other byte the root's"""
-    table, k = byte_classes([b"ab", b"ba", b"c"])
+    """bytes of the data get one class each, every other byte the root's"""
+    table, k = byte_classes(b"abbac")
     assert k == 4 and sorted(set(table)) == [0, 1, 2, 3]
     assert table[ord("a")] != table[ord("b")] and table[0] == table[255] == 3
-    assert byte_classes([bytes(range(256))])[1] == 256
+    assert byte_classes(bytes(range(256)))[1] == 256
 
 
 def test_build_dfa_shares_every_duplicate_row():
