@@ -1,4 +1,7 @@
 """Smoke test for the training pipeline (end-to-end with synthetic data)."""
+import numpy as np
+import pytest
+
 from py3langid.langid import LanguageIdentifier
 from py3langid.modelio import load_model, save_model
 from py3langid.train.train import main
@@ -34,9 +37,14 @@ def test_training_pipeline(tmp_path):
     assert list(shard_dir.iterdir())
 
     # srl dirs fold into the sr label at model assembly
-    classes = load_model(model_path).classes
+    model = load_model(model_path)
+    classes = model.classes
     assert "srl" not in classes
     assert classes.count("sr") == 2
+
+    # features without counts above COUNT_FLOOR in any class are dropped
+    n = len(model.features)
+    assert n and np.unique(model.counts.index % n).size == n
 
     lang, _ = LanguageIdentifier.from_modelpath(str(model_path)).classify("This is a test")
     assert isinstance(lang, str)
@@ -53,3 +61,10 @@ def test_training_pipeline(tmp_path):
     rerun_dir = tmp_path / "model_rerun"
     main(["-m", str(rerun_dir)] + common_args)
     assert (rerun_dir / "model.npz.xz").read_bytes() == model_path.read_bytes()
+
+
+def test_training_rejects_empty_class(tmp_path, capsys):
+    write_corpus(tmp_path / "corpus", [("web", "en", TEXTS["en"][0]), ("web", "fr", "")])
+    with pytest.raises(SystemExit):
+        main(["-m", str(tmp_path / "model"), "-j", "1", str(tmp_path / "corpus")])
+    assert "no n-grams for 1 class(es): ['fr']" in capsys.readouterr().err

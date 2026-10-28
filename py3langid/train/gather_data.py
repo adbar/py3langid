@@ -31,7 +31,7 @@ LEIPZIG_SENTS = 50  # sentences per Leipzig doc, capped at DOC_CAP
 WIKI_DOCS_FACTOR = 3  # wiki leads are short
 WIKI_RANGE = 64 * 1024 * 1024  # ~20 KB of dump per lead
 RAW_CACHE = Path("raw_downloads")  # downloads kept on disk, reused on re-gather
-USED_RAW = set()  # cache files read by this gather, for the manifest
+USED_RAW: set[Path] = set()  # cache files read by this gather, for the manifest
 
 USER_AGENT = "py3langid-gather/0.1 (https://github.com/adbar/py3langid)"
 

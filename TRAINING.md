@@ -19,12 +19,12 @@ domains per language. Docs are capped at 3,000 bytes (`DOC_CAP`).
 
 | Domain  | Source                  | Docs    |
 |---------|-------------------------|---------|
-| wiki    | Wikipedia article leads | 112,824 |
+| wiki    | Wikipedia article leads | 112,788 |
 | leipzig | Leipzig news            |  29,856 |
-| cc100   | CommonCrawl             |  29,503 |
+| cc100   | CommonCrawl             |  29,498 |
 | tatoeba | user sentences          |  18,745 |
-| glotcc  | GlotCC-V1 (topup)       |  11,726 |
-| glot500 | Glot500 (topup)         |   1,391 |
+| glotcc  | GlotCC-V1 (topup)       |  11,709 |
+| glot500 | Glot500 (topup)         |   1,370 |
 
 `MANIFEST.json` records the settings and raw file hashes. The release used
 `--wiki-date 20260913`.
@@ -40,25 +40,34 @@ Downloads are cached and a rerun resumes. `clean` runs within each gather and
 also on its own:
 
 - `zxx` generates the not-a-language class.
-- `dedup` removes duplicate lines per language.
+- `dedup` removes duplicate lines per language, and lines found in the
+  eval sets. `train/eval_lines.npy` holds the `line_hash` of corpus lines
+  matching a FLORES+, WiLI, OpenLID or CommonLID test line. It needs a rebuild
+  when sources or `normalize` change. The generator depends on the benchmark
+  harness, which is not part of the repo.
 - `rules` fixes sources that carry another language (`hbo`, `arz`, `yue`,
   `gom`, `xh`) and drops docs left under 500 bytes.
 
 ## Training
 
-`--feats_per_lang` (default 1050) is the only tuning flag. Other constants
+`--feats_per_lang` (default 1600) is the only tuning flag. Other constants
 live in `common.py` and `words.py`. A run with a warm shard cache takes
 about a minute.
 
 - Shards cache n-gram (orders 2 to 5), word and CJK document frequencies
-  per directory.
+  per directory, plus Han character and pair counts.
 - Selection keeps the top `DF_TOKENS` terms per order, then the top
-  `feats_per_lang` per language by LD weight.
+  `feats_per_lang` per language by LD weight. The weight is discounted by
+  the share of languages that also use the feature, since each one stores
+  a count.
 - NB counts come from the runtime's own longest-match walk. Counts up to
-  `COUNT_FLOOR` are zeroed.
+  `COUNT_FLOOR` are zeroed. Features left without counts are dropped and the
+  rest recounted: longer matches shadow them.
 - The word table adds PMI credits from document frequencies, so short input
-  separates close languages (ms/id, bs/hr). Long words need more documents. Tokens keep combining marks, so Indic words stay
-  whole. CJK marker characters get a fixed credit.
+  separates close languages (ms/id, bs/hr). Long words need more documents.
+  Tokens keep combining marks, so Indic words stay whole.
+- Over Mandarin, Cantonese, Wu and Japanese, near-exclusive characters and
+  Han pairs get a fixed credit. Han pairs also get bigram credits.
 
 ## Results
 
@@ -69,8 +78,8 @@ The harness is not in the repository.
 
 | | WiLI | OpenLID | FLORES+ | CommonLID |
 |---|---|---|---|---|
-| Shipped model | 96.09 | 96.42 | 98.23 | 94.95 |
-| 2-word prefixes | 76.09 | 85.23 | | |
+| Shipped model | 96.13 | 96.46 | 98.27 | 95.02 |
+| 2-word prefixes | 76.27 | 85.37 | | |
 | Pre-fork langid.py | 91.21 | 88.41 | | |
 
-The model has 139 labels and 97,283 features, and weighs 7.2 MB.
+The model has 139 labels and 116,519 features, and weighs 6.6 MB.
