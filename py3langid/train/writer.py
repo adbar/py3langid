@@ -99,16 +99,18 @@ def gather_domain(name, docs_of, langs, jobs, out_root, max_docs, no_split=()):
     no_split: langs whose source is already script-pure (no routing to the alt dir)."""
     # only the primary dir gates completion: minority-script dirs may never
     # fill from mono-script sources (topup covers them)
-    todo = [lang for lang in langs
-            if sum(1 for _ in (out_root / name / lang).glob("*.txt")) < max_docs]
+    todo = [
+        lang for lang in langs if sum(1 for _ in (out_root / name / lang).glob("*.txt")) < max_docs
+    ]
     if len(todo) < len(langs):
         print(f"{name}: {len(langs) - len(todo)} langs already complete")
     counts = {}
 
     def one(lang):
         try:
-            counts[lang] = write_docs(out_root / name / lang, docs_of(lang), max_docs,
-                                      split=lang not in no_split)
+            counts[lang] = write_docs(
+                out_root / name / lang, docs_of(lang), max_docs, split=lang not in no_split
+            )
         except Exception as e:  # noqa: BLE001
             print(f"{name}/{lang}: SKIP ({e})")
 

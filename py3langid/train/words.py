@@ -33,8 +33,11 @@ def _markers(df, ndocs, classes, lang_index):
         ratio, min_df = (MARKER_RATIO, MARKER_MIN_DF) if len(ch) == 1 else (PAIR_RATIO, PAIR_MIN_DF)
         rates = np.array([df[c][ch] / ndocs[c] for c in classes])
         owner = int(rates.argmax())
-        if (df[classes[owner]][ch] >= min_df and rates[owner] >= MARKER_MIN_RATE
-                and rates[owner] >= ratio * np.partition(rates, -2)[-2]):
+        if (
+            df[classes[owner]][ch] >= min_df
+            and rates[owner] >= MARKER_MIN_RATE
+            and rates[owner] >= ratio * np.partition(rates, -2)[-2]
+        ):
             out[ch] = lang_index[classes[owner]]
     # a pair adds nothing to a marker character of the same class
     return {t: c for t, c in out.items() if len(t) == 1 or c not in (out.get(t[0]), out.get(t[1]))}
@@ -59,9 +62,13 @@ def _bigrams(han, classes, lang_index):
         v = []
         for k in range(len(classes)):
             p = (uni[k][b] + 1) / norm[k]
-            v.append(math.log((bi[k][ab] + BIGRAM_ALPHA * p) / (ctx[k][a] + BIGRAM_ALPHA)) - math.log(p))
+            v.append(
+                math.log((bi[k][ab] + BIGRAM_ALPHA * p) / (ctx[k][a] + BIGRAM_ALPHA)) - math.log(p)
+            )
         low = min(v)
-        out[ab] = [(lang_index[c], BIGRAM_WEIGHT * (x - low)) for c, x in zip(classes, v) if x > low]
+        out[ab] = [
+            (lang_index[c], BIGRAM_WEIGHT * (x - low)) for c, x in zip(classes, v) if x > low
+        ]
     return out
 
 
@@ -73,7 +80,12 @@ def _min_df(word):
 
 def build_words(shard_items, lang_index):
     """WordTable of credits of at least CREDIT_FLOOR, Han bigram credits excepted."""
-    word_df, df, ndocs, han = defaultdict(Counter), defaultdict(Counter), Counter(), defaultdict(Counter)
+    word_df, df, ndocs, han = (
+        defaultdict(Counter),
+        defaultdict(Counter),
+        Counter(),
+        defaultdict(Counter),
+    )
     for _, lang, shard_path in shard_items:
         words, chars, n, han_counts = load_shard(shard_path, TOKENS)
         word_df[lang].update(words)
@@ -103,6 +115,9 @@ def build_words(shard_items, lang_index):
     vocab = sorted(rows)
     indptr = np.cumsum([0] + [len(rows[w]) for w in vocab], dtype=np.int32)
     flat = [e for w in vocab for e in rows[w]]
-    return WordTable("\n".join(vocab).encode(), indptr,
-                     np.array([c for c, _ in flat], dtype=np.int32),
-                     np.array([v for _, v in flat], dtype=np.float32))
+    return WordTable(
+        "\n".join(vocab).encode(),
+        indptr,
+        np.array([c for c, _ in flat], dtype=np.int32),
+        np.array([v for _, v in flat], dtype=np.float32),
+    )

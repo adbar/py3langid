@@ -19,6 +19,7 @@ History
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
 * ``set_languages`` thread-safe, ``labels`` read-only
 * faster classification (~5%, 2-word input ~20%)
+* Type annotations for the inference API (``py.typed``)
 * Training: one command gathers and cleans the corpus and writes
   ``MANIFEST.json``
 * Training: model-free cleaning (``clean``), ``verify`` removed
@@ -34,6 +35,7 @@ Breaking:
 * 0.4.0 models rejected, retrain with ``py3langid.train.train``
 * ``modelio.expand_nextmove`` and CLI ``-u/--url``, ``-r/--remote`` removed
 * ``sdh`` dropped (138 languages)
+* Web service: POST without ``q`` returns 400 (was the raw body)
 
 0.4.0
 -----

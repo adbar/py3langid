@@ -11,20 +11,24 @@ from ..langid import normalize
 
 MAX_NGRAM_ORDER = 5
 MIN_NGRAM_ORDER = 2
-DF_TOKENS = 60000        # candidate pool per order
-FEATURES_PER_LANG = 1600 # per-language, not global (keeps script-novel langs viable)
-COUNT_FLOOR = 3          # NB counts at or below this are zeroed before smoothing
-CELL_COST = 3            # LD discount per share of classes above COUNT_FLOOR (model cells)
-DOC_CAP = 3000           # byte budget: gathering, tokenization, zxx
+DF_TOKENS = 60000  # candidate pool per order
+FEATURES_PER_LANG = 1600  # per-language, not global (keeps script-novel langs viable)
+COUNT_FLOOR = 3  # NB counts at or below this are zeroed before smoothing
+CELL_COST = 3  # LD discount per share of classes above COUNT_FLOOR (model cells)
+DOC_CAP = 3000  # byte budget: gathering, tokenization, zxx
 MIN_DOC = 500
-NORMALIZE_VERSION = 8    # bump when normalize or the shard payload changes
+NORMALIZE_VERSION = 8  # bump when normalize or the shard payload changes
 
 SENT_SPLIT = re.compile(r"(?<=[.!?])(?:\s+|(?=[　-鿿＀-￯]))|(?<=[。！？।])")
 
 
 # Traditional vs Simplified Chinese: 150 frequent, script-pure character pairs
-_HANT = frozenset("為時來會個這過對發現開經還們當與說動間進實國關體沒點將內讓從樣機無長麼應業場種學兩問別給結題產網幾設帶數務變電認該計總覺話區資選強處記頭東達員報爲見箇氣單傳旹門據統專確髮論導滿風許備質觀萬視難標準類則調連約續較決運請夠費參規際卻愛邊辦線級驗歡轉創議領隨雖價術離顯師組裝書項識車樂買況聯團張獲優態熱節圖")
-_HANS = frozenset("为时来会个这过对发现开经还们当与说动间进实国关体没点将内让从样机无长么应业场种学两问别给结题产网几设带数务变电认该计总觉话区资选强处记头东达员报为见个气单传时门据统专确发论导满风许备质观万视难标准类则调连约续较决运请够费参规际却爱边办线级验欢转创议领随虽价术离显师组装书项识车乐买况联团张获优态热节图")
+_HANT = frozenset(
+    "為時來會個這過對發現開經還們當與說動間進實國關體沒點將內讓從樣機無長麼應業場種學兩問別給結題產網幾設帶數務變電認該計總覺話區資選強處記頭東達員報爲見箇氣單傳旹門據統專確髮論導滿風許備質觀萬視難標準類則調連約續較決運請夠費參規際卻愛邊辦線級驗歡轉創議領隨雖價術離顯師組裝書項識車樂買況聯團張獲優態熱節圖"
+)
+_HANS = frozenset(
+    "为时来会个这过对发现开经还们当与说动间进实国关体没点将内让从样机无长么应业场种学两问别给结题产网几设带数务变电认该计总觉话区资选强处记头东达员报为见个气单传时门据统专确发论导满风许备质观万视难标准类则调连约续较决运请够费参规际却爱边办线级验欢转创议领随虽价术离显师组装书项识车乐买况联团张获优态热节图"
+)
 
 
 def hant_majority(doc):
@@ -96,14 +100,16 @@ def pmap_chunks(fn, tasks, jobs=1, shared=()):
     """Yield fn(*shared, chunk) over one contiguous chunk of tasks per job."""
     size = max(1, -(-len(tasks) // max(1, jobs)))
     with MapPool(jobs) as f:
-        yield from f(partial(fn, *shared), [tasks[i:i + size] for i in range(0, len(tasks), size)])
+        yield from f(
+            partial(fn, *shared), [tasks[i : i + size] for i in range(0, len(tasks), size)]
+        )
 
 
 @contextmanager
 def MapPool(processes=1):
     """Process pool that falls back to serial map when processes <= 1."""
     if processes > 1:
-        ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
+        ctx = mp.get_context("fork") if sys.platform == "darwin" else mp
         with ctx.Pool(processes) as pool:
             yield pool.imap_unordered
     else:

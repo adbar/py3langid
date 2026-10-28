@@ -1,4 +1,5 @@
 """Offline unit tests for gather_data (network downloaders are tested by use)."""
+
 import bz2
 import hashlib
 import io
@@ -41,8 +42,8 @@ def _tatoeba_tar(rows):
 
 def test_write_docs(tmp_path):
     docs = [
-        b"x" * (MIN_DOC - 1),      # stub, skipped
-        b"a" * (DOC_CAP + 5000),   # truncated
+        b"x" * (MIN_DOC - 1),  # stub, skipped
+        b"a" * (DOC_CAP + 5000),  # truncated
         b"b" * 600,
         b"c" * 600,
     ]
@@ -150,8 +151,9 @@ def test_script_quota_gates_done(tmp_path, quota_xx):
 
 
 def _fake_dump(docs):
-    return bz2.compress("".join(json.dumps({"opening_text": d}, ensure_ascii=False) + "\n"
-                                for d in docs).encode())
+    return bz2.compress(
+        "".join(json.dumps({"opening_text": d}, ensure_ascii=False) + "\n" for d in docs).encode()
+    )
 
 
 def _cjk_doc(sentence, i):
@@ -191,15 +193,29 @@ def test_cc100_split_scripts_have_their_own_writers(tmp_path, monkeypatch):
     """zh and zht cc100 files are gathered without routing, so the writers never share a dir"""
     feeds = {"zh": [TRAD, SIMP, SIMP, TRAD], "zht": [TRAD, TRAD, SIMP]}
     monkeypatch.setattr(gather_data, "cc100_docs", lambda lang: iter(feeds[lang]))
-    gather_data.main(["--output", str(tmp_path), "--langs", "zh", "--domains", "cc100",
-                      "--max-docs-per-lang", "10", "--jobs", "1"])
+    gather_data.main(
+        [
+            "--output",
+            str(tmp_path),
+            "--langs",
+            "zh",
+            "--domains",
+            "cc100",
+            "--max-docs-per-lang",
+            "10",
+            "--jobs",
+            "1",
+        ]
+    )
     assert sorted(p.read_bytes() for p in (tmp_path / "cc100/zh").iterdir()) == [SIMP, SIMP]
     assert sorted(p.read_bytes() for p in (tmp_path / "cc100/zht").iterdir()) == [TRAD, TRAD]
 
 
 def test_default_langs_are_iso3(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(gather_data, "tatoeba_docs", lambda langs, max_docs: seen.append(langs) or {})
+    monkeypatch.setattr(
+        gather_data, "tatoeba_docs", lambda langs, max_docs: seen.append(langs) or {}
+    )
     gather_data.main(["--output", str(tmp_path), "--domains", "tatoeba"])
     assert seen == [list(ISO3)] and "zxx" not in ISO3
 
@@ -207,9 +223,21 @@ def test_default_langs_are_iso3(tmp_path, monkeypatch):
 def test_tatoeba_split_scripts_share_one_budget(tmp_path, monkeypatch):
     """zh and zht tatoeba docs come from one cmn budget, in file order"""
     feed = [SIMP, TRAD, SIMP, TRAD, SIMP, SIMP]
-    monkeypatch.setattr(gather_data, "tatoeba_docs", lambda langs, n: {"zh": feed[:n], "de": [b"d" * 600] * n})
-    gather_data.main(["--output", str(tmp_path), "--langs", "zh,de", "--domains", "tatoeba",
-                      "--max-docs-per-lang", "3"])
+    monkeypatch.setattr(
+        gather_data, "tatoeba_docs", lambda langs, n: {"zh": feed[:n], "de": [b"d" * 600] * n}
+    )
+    gather_data.main(
+        [
+            "--output",
+            str(tmp_path),
+            "--langs",
+            "zh,de",
+            "--domains",
+            "tatoeba",
+            "--max-docs-per-lang",
+            "3",
+        ]
+    )
     assert len(list((tmp_path / "tatoeba/zh").iterdir())) == 2
     assert len(list((tmp_path / "tatoeba/zht").iterdir())) == 1
     assert len(list((tmp_path / "tatoeba/de").iterdir())) == 3
@@ -247,7 +275,10 @@ def test_gather_cleans_last_and_before_topup(tmp_path, monkeypatch, cleans):
     monkeypatch.setattr(topup, "gather_topup", lambda *a: cleans.append("topup"))
     gather_data.main(["--output", str(tmp_path), "--langs", "de", "--domains", "topup"])
     assert cleans == ["clean", "topup", "clean"]
-    assert json.loads((tmp_path / "MANIFEST.json").read_text("utf-8"))["runs"][0]["hf_revisions"] == topup.REVISION
+    assert (
+        json.loads((tmp_path / "MANIFEST.json").read_text("utf-8"))["runs"][0]["hf_revisions"]
+        == topup.REVISION
+    )
     monkeypatch.setattr(gather_data, "cc100_docs", lambda lang: [])
     gather_data.main(["--output", str(tmp_path), "--langs", "de", "--domains", "cc100"])
     assert cleans[3:] == ["clean"]  # a re-run without topup still ends clean

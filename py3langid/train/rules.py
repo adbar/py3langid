@@ -3,6 +3,7 @@
 Doc rules apply at gather time. Line rules blank lines of
 MIN_PARA bytes or more and drop a doc left under MIN_DOC.
 """
+
 import math
 import re
 from collections import Counter
@@ -14,11 +15,40 @@ from .common import MIN_DOC, drop, walk_corpus
 HEBREW_LETTER = re.compile("[א-ת]")
 HEBREW_POINT = re.compile("[֑-ׇ]")  # cantillation and vowel points
 MIN_POINT_RATIO = 0.1
-EGYPTIAN = frozenset((
-    "مش", "عايز", "عاوز", "عايزة", "ازاي", "إزاي", "دلوقتي", "دلوقت", "كده", "كدا", "علشان", "عشان",
-    "بتاع", "بتاعة", "بتوع", "امبارح", "النهارده", "مفيش", "خالص", "اوي", "أوي", "ايه", "إيه",
-    "بقى", "ليه", "احنا", "إحنا", "انتو", "دول", "برده",
-))
+EGYPTIAN = frozenset(
+    (
+        "مش",
+        "عايز",
+        "عاوز",
+        "عايزة",
+        "ازاي",
+        "إزاي",
+        "دلوقتي",
+        "دلوقت",
+        "كده",
+        "كدا",
+        "علشان",
+        "عشان",
+        "بتاع",
+        "بتاعة",
+        "بتوع",
+        "امبارح",
+        "النهارده",
+        "مفيش",
+        "خالص",
+        "اوي",
+        "أوي",
+        "ايه",
+        "إيه",
+        "بقى",
+        "ليه",
+        "احنا",
+        "إحنا",
+        "انتو",
+        "دول",
+        "برده",
+    )
+)
 CANTONESE = frozenset("嘅係咗冇唔喺啲佢哋嚟")
 DEVANAGARI = re.compile("[ऀ-ॿ]")
 MIN_PARA = 150
@@ -51,8 +81,9 @@ def zulu_test(corpus):
         return lambda line: False
     vocab = len(set(xh) | set(zu))
     nx, nz = sum(xh.values()) + 0.5 * vocab, sum(zu.values()) + 0.5 * vocab
-    return lambda line: sum(math.log((zu[w] + 0.5) / nz) - math.log((xh[w] + 0.5) / nx)
-                            for w in _words(line)) > 0
+    return lambda line: (
+        sum(math.log((zu[w] + 0.5) / nz) - math.log((xh[w] + 0.5) / nx) for w in _words(line)) > 0
+    )
 
 
 DOC_RULES = {

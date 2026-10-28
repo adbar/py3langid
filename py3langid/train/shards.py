@@ -32,15 +32,14 @@ def doc_ngrams(data, max_order):
     n = len(data)
     for i in range(n):
         for k in range(MIN_NGRAM_ORDER, min(max_order, n - i) + 1):
-            terms.add(data[i:i + k])
+            terms.add(data[i : i + k])
     return terms
 
 
 def _group_key(paths):
     """Cache key from doc metadata + tokenization constants."""
     h = hashlib.sha256()
-    h.update(f"{MIN_NGRAM_ORDER}\0{MAX_NGRAM_ORDER}\0"
-             f"{DOC_CAP}\0{NORMALIZE_VERSION}\0".encode())
+    h.update(f"{MIN_NGRAM_ORDER}\0{MAX_NGRAM_ORDER}\0{DOC_CAP}\0{NORMALIZE_VERSION}\0".encode())
     for p in sorted(paths):
         st = os.stat(p)
         h.update(f"{os.path.basename(p)}\0{st.st_size}\0{st.st_mtime_ns}\0".encode())
@@ -51,7 +50,7 @@ def _build_shard(arg):
     """Build one shard or reuse cached. Returns (shard_path, built)."""
     shard_path, key, paths = arg
     try:
-        with open(shard_path, 'rb') as f:
+        with open(shard_path, "rb") as f:
             if marshal.load(f) == key:
                 return shard_path, False
     except (OSError, EOFError, ValueError, TypeError):
@@ -67,10 +66,11 @@ def _build_shard(arg):
         chars.update(cjk | set(pairs))
         han.update(HAN_RE.findall(text) + pairs)
 
-    tmp_path = shard_path + '.tmp'
-    with open(tmp_path, 'wb') as f:
+    tmp_path = shard_path + ".tmp"
+    with open(tmp_path, "wb") as f:
         marshal.dump(key, f)
-        marshal.dump((dict(words), dict(chars), len(paths), dict(han)), f)  # small part first: TOKENS skips docfreq
+        # small part first: TOKENS skips docfreq
+        marshal.dump((dict(words), dict(chars), len(paths), dict(han)), f)
         marshal.dump(dict(docfreq), f)
     os.replace(tmp_path, shard_path)
     return shard_path, True
@@ -79,8 +79,10 @@ def _build_shard(arg):
 def build_shards(items, shard_dir, jobs=1):
     """Build/reuse cached shards. Returns [(domain, lang, shard_path), ...]."""
     os.makedirs(shard_dir, exist_ok=True)
-    cells = [(domain, lang, os.path.join(shard_dir, f"{domain}__{lang}"), [p for *_, p in group])
-             for (domain, lang), group in groupby(sorted(items), itemgetter(0, 1))]
+    cells = [
+        (domain, lang, os.path.join(shard_dir, f"{domain}__{lang}"), [p for *_, p in group])
+        for (domain, lang), group in groupby(sorted(items), itemgetter(0, 1))
+    ]
     tasks = [(shard_path, _group_key(paths), paths) for _, _, shard_path, paths in cells]
     with MapPool(jobs) as f:
         built = sum(new for _, new in f(_build_shard, tasks))
@@ -93,7 +95,7 @@ TOKENS, DOCFREQ = 1, 2  # shard records after the key
 
 def load_shard(shard_path, part=DOCFREQ):
     """TOKENS: (word df, CJK char df, doc count, Han counts), DOCFREQ: term → document frequency."""
-    with open(shard_path, 'rb') as f:
+    with open(shard_path, "rb") as f:
         for _ in range(part):
             marshal.load(f)
         return marshal.load(f)
@@ -141,7 +143,8 @@ def count_matrices(shard_items, features, lang_index, domain_index, jobs=1):
     cm_lang = np.zeros((len(features), len(lang_index)), dtype=COUNT_DTYPE)
     cm_domain = np.zeros((len(features), len(domain_index)), dtype=COUNT_DTYPE)
     for part_lang, part_domain in pmap_chunks(
-            _matrices_chunk, shard_items, jobs, (feat_index, lang_index, domain_index)):
+        _matrices_chunk, shard_items, jobs, (feat_index, lang_index, domain_index)
+    ):
         cm_lang += part_lang
         cm_domain += part_domain
     return cm_lang, cm_domain

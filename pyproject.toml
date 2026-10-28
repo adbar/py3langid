@@ -52,7 +52,7 @@ packages = ["py3langid"]
 version = {attr = "py3langid.__version__"}
 
 [tool.setuptools.package-data]
-py3langid = ["data/model.npz.xz"]
+py3langid = ["data/model.npz.xz", "py.typed"]
 
 [project.scripts]
 langid = "py3langid.langid:main"
@@ -66,9 +66,9 @@ langid = "py3langid.langid:main"
 [dependency-groups]
 dev = [
     "mypy==2.4.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
-    "ruff==0.17.1",
+    "ruff==0.17.3",
 ]
 
 [tool.pytest.ini_options]
@@ -76,6 +76,31 @@ testpaths = ["tests", "README.rst"]
 addopts = "--doctest-glob=README.rst"
 doctest_optionflags = "NUMBER"
 
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I", "UP"]
+
+[tool.mypy]
+warn_redundant_casts = true
+
 [[tool.mypy.overrides]]
 module = ["datasets", "huggingface_hub"]  # optional training dependencies
 ignore_missing_imports = true
+
+# --strict on the inference code (strict itself is global-only)
+[[tool.mypy.overrides]]
+module = ["py3langid", "py3langid.dfa", "py3langid.langid", "py3langid.modelio", "py3langid.server"]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+extra_checks = true
+no_implicit_reexport = true
+strict_equality = true
+warn_return_any = true
+warn_unused_ignores = true

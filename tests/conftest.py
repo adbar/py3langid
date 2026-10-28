@@ -8,8 +8,9 @@ import pytest
 import py3langid.langid as mod
 from py3langid.modelio import WordTable
 
-NO_WORDS = WordTable(b"", np.zeros(1, dtype=np.int32), np.zeros(0, dtype=np.int32),
-                     np.zeros(0, dtype=np.float32))
+NO_WORDS = WordTable(
+    b"", np.zeros(1, dtype=np.int32), np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float32)
+)
 
 
 def write_corpus(root, docs):
@@ -26,7 +27,10 @@ def write_corpus(root, docs):
 
 def longest_counts(feats, data):
     """reference scanner, naive O(n*|feats|): counts of the longest feature ending at each byte"""
-    hits = (max((f for f in feats if data[:end].endswith(f)), key=len, default=None) for end in range(1, len(data) + 1))
+    hits = (
+        max((f for f in feats if data[:end].endswith(f)), key=len, default=None)
+        for end in range(1, len(data) + 1)
+    )
     return Counter(feats.index(h) for h in hits if h is not None)
 
 
@@ -43,5 +47,9 @@ def _shipped_model_loaded_once():
     real, shipped = mod.load_model, mod.MODEL_FILE.resolve()
     cached = functools.cache(lambda: real(shipped))
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(mod, "load_model", lambda path: cached() if Path(path).resolve() == shipped else real(path))
+        mp.setattr(
+            mod,
+            "load_model",
+            lambda path: cached() if Path(path).resolve() == shipped else real(path),
+        )
         yield

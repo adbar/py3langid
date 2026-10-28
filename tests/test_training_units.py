@@ -1,4 +1,5 @@
 """Unit tests for the numeric core of the training pipeline."""
+
 import math
 import os
 from pathlib import Path
@@ -44,8 +45,10 @@ def _table(root, docs):
     langs = {lang: i for i, lang in enumerate(dict.fromkeys(lang for _, lang, _ in docs))}
     vocab, indptr, cols, vals = W.build_words(build_shards(items, shard_dir, jobs=1), langs)
     assert len(vals) == len(cols) == indptr[-1]
-    return {w: list(zip(cols[a:b].tolist(), vals[a:b].tolist()))
-            for w, a, b in zip(vocab.decode().split("\n"), indptr, indptr[1:])}
+    return {
+        w: list(zip(cols[a:b].tolist(), vals[a:b].tolist()))
+        for w, a, b in zip(vocab.decode().split("\n"), indptr, indptr[1:])
+    }
 
 
 def _cols(table):
@@ -105,6 +108,7 @@ def _ld_matrix(cm, dist, domain_ig=None):
 
 def test_ld_weights_matches_contingency_table():
     """the fused per-column formula against a brute-force 2x2 IG reference, minus the domain IG"""
+
     def brute(cm, dist):
         cm, dist = np.asarray(cm, float), np.asarray(dist, float)
         n = dist.sum()
@@ -129,12 +133,21 @@ def test_ld_weights_matches_contingency_table():
     for _ in range(40):
         nl, nt = int(rng.integers(1, 7)), int(rng.integers(1, 12))
         dist = rng.integers(1, 40, nl)
-        cases.append((np.array([[rng.integers(0, dist[j] + 1) for j in range(nl)]
-                                for _ in range(nt)], dtype=np.int32), dist))
+        cases.append(
+            (
+                np.array(
+                    [[rng.integers(0, dist[j] + 1) for j in range(nl)] for _ in range(nt)],
+                    dtype=np.int32,
+                ),
+                dist,
+            )
+        )
     # all-zero rows, a single language, an entirely empty matrix
-    cases += [(np.array([[0, 0], [2, 2]], dtype=np.int32), np.array([2, 2])),
-              (np.array([[2], [0]], dtype=np.int32), np.array([2])),
-              (np.zeros((3, 4), dtype=np.int32), np.array([5, 5, 5, 5]))]
+    cases += [
+        (np.array([[0, 0], [2, 2]], dtype=np.int32), np.array([2, 2])),
+        (np.array([[2], [0]], dtype=np.int32), np.array([2])),
+        (np.zeros((3, 4), dtype=np.int32), np.array([5, 5, 5, 5])),
+    ]
     for cm, dist in cases:
         got = _ld_matrix(cm, dist)
         assert not np.isnan(got).any()
@@ -178,12 +191,14 @@ def test_ngram_select_per_order_pool():
     assert ngram_select({}, 10) == []
 
 
-@pytest.mark.parametrize("doc_cap,expected", [
-    (3, [b"ab", b"bc"]),  # cap 3 sees only b"abc": b"cd" on is never tokenized
-    (-1, [b"ab", b"bc", b"cd", b"de", b"ef"]),  # -1 = no cap
-])
-def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap,
-                           expected):
+@pytest.mark.parametrize(
+    "doc_cap,expected",
+    [
+        (3, [b"ab", b"bc"]),  # cap 3 sees only b"abc": b"cd" on is never tokenized
+        (-1, [b"ab", b"bc", b"cd", b"de", b"ef"]),  # -1 = no cap
+    ],
+)
+def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap, expected):
     """DOC_CAP bounds how much of a document reaches the tokenizer"""
     monkeypatch.setattr("py3langid.train.shards.DOC_CAP", doc_cap)
     doc = tmp_path / "doc0000.txt"
@@ -195,8 +210,7 @@ def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap,
 
 
 def test_build_shards_cache(tmp_path, tokenize_order2):
-    items, shard_dir = make_corpus(tmp_path, [("web", "en", b"abab"),
-                                              ("web", "en", b"ab")])
+    items, shard_dir = make_corpus(tmp_path, [("web", "en", b"abab"), ("web", "en", b"ab")])
     doc0 = Path(items[0][2])
 
     [(domain, lang, shard_path)] = build_shards(items, shard_dir, jobs=1)
@@ -205,7 +219,8 @@ def test_build_shards_cache(tmp_path, tokenize_order2):
     # feature_counts, so total occurrence counts are never stored
     docfreq = load_shard(shard_path)
     assert docfreq == {b"ab": 2, b"ba": 1}
-    assert load_shard(shard_path, TOKENS) == ({"abab": 1, "ab": 1}, {}, 2, {})  # word df, CJK df, docs, Han counts
+    # word df, CJK df, docs, Han counts
+    assert load_shard(shard_path, TOKENS) == ({"abab": 1, "ab": 1}, {}, 2, {})
 
     # unchanged corpus: shard is reused, not rewritten
     mtime = os.path.getmtime(shard_path)
@@ -222,8 +237,7 @@ def test_build_shards_cache(tmp_path, tokenize_order2):
 
 def test_merge_docfreq_spans_chunks(tmp_path, tokenize_order2):
     """the merge reduces across several chunks, not just one"""
-    items, shard_dir = make_corpus(
-        tmp_path, [("web", f"l{i}", b"abab") for i in range(5)])
+    items, shard_dir = make_corpus(tmp_path, [("web", f"l{i}", b"abab") for i in range(5)])
     shard_items = build_shards(items, shard_dir, jobs=1)  # 5 shards over 3 jobs: 3 chunks
     # every shard is b"abab": df 1 per shard, so 5 shards sum to 5
     assert merge_docfreq(shard_items, jobs=3) == {b"ab": 5, b"ba": 5}
@@ -232,18 +246,17 @@ def test_merge_docfreq_spans_chunks(tmp_path, tokenize_order2):
 def test_count_matrices(tmp_path, tokenize_order2):
     """per-lang and per-domain docfreq in one shard pass"""
     # en appears in two domains, fr in one
-    items, shard_dir = make_corpus(tmp_path, [("web", "en", b"abab"),
-                                              ("news", "en", b"abab"),
-                                              ("web", "fr", b"cdcd")])
+    items, shard_dir = make_corpus(
+        tmp_path, [("web", "en", b"abab"), ("news", "en", b"abab"), ("web", "fr", b"cdcd")]
+    )
     shard_items = build_shards(items, shard_dir, jobs=1)
 
     feats = [b"ab", b"cd"]
     lang_index, domain_index = {"en": 0, "fr": 1}, {"news": 0, "web": 1}
-    cm_lang, cm_domain = count_matrices(
-        shard_items, feats, lang_index, domain_index, jobs=1)
+    cm_lang, cm_domain = count_matrices(shard_items, feats, lang_index, domain_index, jobs=1)
 
     assert cm_lang.dtype == COUNT_DTYPE and cm_domain.dtype == COUNT_DTYPE
-    assert cm_lang.tolist() == [[2, 0], [0, 1]]    # b"ab" in 2 en docs
+    assert cm_lang.tolist() == [[2, 0], [0, 1]]  # b"ab" in 2 en docs
     assert cm_domain.tolist() == [[1, 1], [0, 1]]  # b"ab" in news + web
 
 
@@ -251,8 +264,7 @@ def test_shard_cache_keyed_on_tokenization(tmp_path, monkeypatch):
     """Reuse is exact key equality: editing a tokenization constant (order, cap) rebuilds
     instead of serving shards written under the old one. (Reuse used to be
     order >=, which let features depend on the cache's history.)"""
-    items, shard_dir = make_corpus(
-        tmp_path, [("web", "zh", "中文abcdef".encode())])
+    items, shard_dir = make_corpus(tmp_path, [("web", "zh", "中文abcdef".encode())])
 
     [(_, _, shard_path)] = build_shards(items, shard_dir, jobs=1)
     terms = load_shard(shard_path)
@@ -272,12 +284,17 @@ def test_shard_cache_keyed_on_tokenization(tmp_path, monkeypatch):
 def test_axis_first_appearance_order(tmp_path):
     """class column order is first appearance along the sorted walk, NOT
     alphabetical -- it fixes nb_classes, so pin it"""
-    write_corpus(tmp_path, [(d, lang, b"some text here")
-                            for d, langs in (("aaa", ["en", "fr"]), ("bbb", ["de", "en"]))
-                            for lang in langs])
+    write_corpus(
+        tmp_path,
+        [
+            (d, lang, b"some text here")
+            for d, langs in (("aaa", ["en", "fr"]), ("bbb", ["de", "en"]))
+            for lang in langs
+        ],
+    )
     items = list(walk_corpus(tmp_path))
     langs, dist, index = _axis(lang for _, lang, _ in items)
-    assert langs == ["en", "fr", "de"]   # "de" is absent from the first domain
+    assert langs == ["en", "fr", "de"]  # "de" is absent from the first domain
     assert dist.tolist() == [2, 1, 1]
     assert index == {"en": 0, "fr": 1, "de": 2}
     assert _axis(d for d, _, _ in items)[0] == ["aaa", "bbb"]
@@ -287,7 +304,9 @@ def test_feature_counts(tmp_path, monkeypatch):
     """NB numerators = one longest match per byte position, per language"""
     feats = [b"ab", b"abc", b"c"]
     docs = {"en": [b"abcabc", b"ab", b""], "fr": [b"cc", b"xabz"]}
-    items = write_corpus(tmp_path, [("dom", lang, t) for lang, texts in docs.items() for t in texts])
+    items = write_corpus(
+        tmp_path, [("dom", lang, t) for lang, texts in docs.items() for t in texts]
+    )
     lang_index = {"en": 0, "fr": 1}
 
     expected = np.zeros((len(feats), 2), dtype=np.int64)
@@ -309,15 +328,21 @@ def test_feature_counts(tmp_path, monkeypatch):
 def test_build_words_markers(tmp_path, no_bigrams):
     """CJK characters near-exclusive to one CJK class (>= MARKER_MIN_DF docs) get a fixed credit"""
     docs = [("web", "yue", f"佢嘅書{i}".encode()) for i in range(W.MARKER_MIN_DF)]
-    docs += [("web", "zh", f"他的書{i}".encode()) for i in range(W.MARKER_MIN_DF)] + [("web", "en", b"book")]
+    docs += [("web", "zh", f"他的書{i}".encode()) for i in range(W.MARKER_MIN_DF)] + [
+        ("web", "en", b"book")
+    ]
     got = _table(tmp_path, docs)
     credit = W.MARKER_WEIGHT
-    assert {w: e for w, e in got.items() if e} == {"佢": [(0, credit)], "嘅": [(0, credit)],
-                                                   "他": [(1, credit)], "的": [(1, credit)]}
+    assert {w: e for w, e in got.items() if e} == {
+        "佢": [(0, credit)],
+        "嘅": [(0, credit)],
+        "他": [(1, credit)],
+        "的": [(1, credit)],
+    }
     # shared 書 is no marker and CJK characters get no PMI credit; digits are not tokens
     assert "書" not in got and list(got) == sorted(got)
     # fewer than MARKER_MIN_DF docs: no marker
-    assert "嘅" not in _table(tmp_path / "b", docs[:2] + docs[W.MARKER_MIN_DF:])
+    assert "嘅" not in _table(tmp_path / "b", docs[:2] + docs[W.MARKER_MIN_DF :])
 
 
 def test_build_words_pair_markers(tmp_path, no_bigrams):
@@ -355,21 +380,25 @@ def test_build_words_bigrams(tmp_path):
 
 def test_read_doc_matches_runtime_encoding(tmp_path):
     """training reads bytes exactly as the identifier normalizes them"""
-    raw = 'Ünïcode MIXED café ЭТО'.encode() + 'é'.encode()[:1]  # cut mid-codepoint
+    raw = "Ünïcode MIXED café ЭТО".encode() + "é".encode()[:1]  # cut mid-codepoint
     path = tmp_path / "doc.txt"
     path.write_bytes(raw)
     assert read_doc(path) == normalize(raw)
-    assert read_doc(path)[0] == b'\xc3\xbcn\xc3\xafcode mixed caf\xc3\xa9 \xd1\x8d\xd1\x82\xd0\xbe'
+    assert read_doc(path)[0] == b"\xc3\xbcn\xc3\xafcode mixed caf\xc3\xa9 \xd1\x8d\xd1\x82\xd0\xbe"
     # cap <= 0 means no cap, a positive cap truncates
     assert read_doc(path, 0) == read_doc(path, -1) == read_doc(path)
-    assert read_doc(path, 3)[0] == b'\xc3\xbcn'
+    assert read_doc(path, 3)[0] == b"\xc3\xbcn"
 
 
 def test_build_words(tmp_path, monkeypatch):
     """words kept by document frequency, long words need more docs, credits only where over-represented"""
     monkeypatch.setattr(W, "DOC_OFFSET", 0)
-    docs = [("web", "en", b"the cat extraordinarily")] * 2 + [("web", "fr", b"le chat")] * 2 \
-        + [("web", "fr", b"the rare rare")] + [("web", "de", b"der hund")] * 4
+    docs = (
+        [("web", "en", b"the cat extraordinarily")] * 2
+        + [("web", "fr", b"le chat")] * 2
+        + [("web", "fr", b"the rare rare")]
+        + [("web", "de", b"der hund")] * 4
+    )
     got = _table(tmp_path, docs)  # 'rare' twice in one doc, long word in two
     assert _cols(got) == {"cat": [0], "chat": [1], "der": [2], "hund": [2], "le": [1], "the": [0]}
     assert all(x >= W.CREDIT_FLOOR for e in got.values() for _, x in e)

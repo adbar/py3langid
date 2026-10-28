@@ -16,8 +16,7 @@ def ngram_select(doc_count, tokens_per_order=DF_TOKENS):
         buckets[len(term)].append((count, term))
     features = set()
     for bucket in buckets.values():
-        top = heapq.nsmallest(tokens_per_order, bucket,
-                              key=lambda x: (-x[0], x[1]))
+        top = heapq.nsmallest(tokens_per_order, bucket, key=lambda x: (-x[0], x[1]))
         features.update(term for _, term in top)
     return sorted(features)
 
@@ -52,8 +51,7 @@ def compute_IG(cm_pos, dist):
     dist = np.asarray(dist, dtype=float)
     n = dist.sum()
     t = present.sum(1)
-    return entropy(dist) - (t * entropy(present)
-                            + (n - t) * entropy(dist - present)) / n
+    return entropy(dist) - (t * entropy(present) + (n - t) * entropy(dist - present)) / n
 
 
 def ld_weights(cm_lang, lang_dist, domain_ig):
@@ -66,9 +64,11 @@ def ld_weights(cm_lang, lang_dist, domain_ig):
     for j, dist_j in enumerate(dist):
         pos = np.asarray(cm_lang[:, j], dtype=float)
         neg = dist_j - pos
-        yield prior[j] - (t * _binary_entropy(pos, t - pos)
-                          + rest * _binary_entropy(neg, rest - neg)) / n \
+        yield (
+            prior[j]
+            - (t * _binary_entropy(pos, t - pos) + rest * _binary_entropy(neg, rest - neg)) / n
             - domain_ig
+        )
 
 
 def select_LD_features(cm_lang, lang_dist, domain_ig, feats_per_lang):
@@ -93,7 +93,8 @@ def _feature_counts_chunk(dfa, n_feats, num_langs, chunk):
         visits = visit_counts(dfa, read_doc(path, DOC_CAP)[0])
         if visits:
             counts[list(visits), col] += np.fromiter(
-                visits.values(), dtype=np.int64, count=len(visits))
+                visits.values(), dtype=np.int64, count=len(visits)
+            )
     return counts
 
 
@@ -103,7 +104,8 @@ def feature_counts(items, features, lang_index, jobs=1):
     print(f"scanner: {len(dfa.output)} states, {sum(f >= 0 for f in dfa.output)} emitting")
     tasks = [(lang_index[lang], path) for _, lang, path in items]
     counts = np.zeros((len(features), len(lang_index)), dtype=np.int64)
-    for partial in pmap_chunks(_feature_counts_chunk, tasks, jobs,
-                               (dfa, len(features), len(lang_index))):
+    for partial in pmap_chunks(
+        _feature_counts_chunk, tasks, jobs, (dfa, len(features), len(lang_index))
+    ):
         counts += partial
     return counts

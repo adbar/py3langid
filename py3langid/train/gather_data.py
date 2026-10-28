@@ -23,7 +23,9 @@ from .writer import PACK_TARGET, gather_domain, pack_docs
 TATOEBA_URL = "https://downloads.tatoeba.org/exports/sentences.tar.bz2"
 CC100_URL = "https://data.statmt.org/cc-100/{code}.txt.xz"
 CIRRUS_INDEX = "https://dumps.wikimedia.org/other/cirrus_search_index/"
-CIRRUS_URL = CIRRUS_INDEX + "{date}/index_name%3D{code}wiki_content/{code}wiki_content-{date}-00000.json.bz2"
+CIRRUS_URL = (
+    CIRRUS_INDEX + "{date}/index_name%3D{code}wiki_content/{code}wiki_content-{date}-00000.json.bz2"
+)
 LEIPZIG_URL = "https://downloads.wortschatz-leipzig.de/corpora/{name}.tar.gz"
 
 CC100_RANGE = 2 * 1024 * 1024
@@ -64,8 +66,9 @@ def fetch_cached(url, cache_path, headers=None):
 
 def fetch_head(url, cache_path, size):
     """The first *size* bytes of url, cached."""
-    return fetch_cached(url, cache_path.with_name(f"{cache_path.name}.head{size}"),
-                        {"Range": f"bytes=0-{size - 1}"})
+    return fetch_cached(
+        url, cache_path.with_name(f"{cache_path.name}.head{size}"), {"Range": f"bytes=0-{size - 1}"}
+    )
 
 
 def _tar_lines(resp, mode, suffix):
@@ -78,9 +81,11 @@ def _tar_lines(resp, mode, suffix):
 
 def cc100_docs(lang):
     code = CC100_CODE.get(lang, lang)
-    with fetch_head(CC100_URL.format(code=code), RAW_CACHE / "cc100" / f"{code}.txt.xz",
-                    CC100_RANGE) as resp:
-        data = lzma.LZMADecompressor().decompress(resp.read())  # truncated input decodes without error
+    with fetch_head(
+        CC100_URL.format(code=code), RAW_CACHE / "cc100" / f"{code}.txt.xz", CC100_RANGE
+    ) as resp:
+        # truncated input decodes without error
+        data = lzma.LZMADecompressor().decompress(resp.read())
     return data.split(b"\n\n")[:-1]
 
 
@@ -99,8 +104,11 @@ def wiki_docs(lang, date):
     """One doc per opening_text (full "text" carries reference sections in other languages)."""
     code = WIKI_CODE.get(lang, lang)
     seen, dec, buf = set(), bz2.BZ2Decompressor(), b""
-    with fetch_head(CIRRUS_URL.format(code=code, date=date),
-                    RAW_CACHE / "wiki" / f"{code}wiki-{date}.json.bz2", WIKI_RANGE) as resp:
+    with fetch_head(
+        CIRRUS_URL.format(code=code, date=date),
+        RAW_CACHE / "wiki" / f"{code}wiki-{date}.json.bz2",
+        WIKI_RANGE,
+    ) as resp:
         while chunk := resp.read(1 << 18):
             buf += dec.decompress(chunk)
             *lines, buf = buf.split(b"\n")
@@ -131,7 +139,9 @@ def leipzig_docs(lang):
     if not name:
         return
     sentences = []
-    with fetch_cached(LEIPZIG_URL.format(name=name), RAW_CACHE / "leipzig" / f"{name}.tar.gz") as resp:
+    with fetch_cached(
+        LEIPZIG_URL.format(name=name), RAW_CACHE / "leipzig" / f"{name}.tar.gz"
+    ) as resp:
         for raw in _tar_lines(resp, "r|gz", "-sentences.txt"):
             parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("\t", 1)
             if len(parts) == 2:
@@ -139,7 +149,7 @@ def leipzig_docs(lang):
     # file order (alphabetical) and fixed-size chunks reproduce the release corpus,
     # a uniform sample measured worse on CommonLID (-0.07)
     for i in range(0, len(sentences), LEIPZIG_SENTS):
-        yield "\n".join(sentences[i:i + LEIPZIG_SENTS]).encode("utf-8")
+        yield "\n".join(sentences[i : i + LEIPZIG_SENTS]).encode("utf-8")
 
 
 def latest_cirrus_date():
@@ -160,7 +170,10 @@ def write_manifest(out_root, info):
         with open(p, "rb") as f:
             while chunk := f.read(1 << 20):
                 h.update(chunk)
-        raw[p.relative_to(RAW_CACHE).as_posix()] = {"size": p.stat().st_size, "sha256": h.hexdigest()}
+        raw[p.relative_to(RAW_CACHE).as_posix()] = {
+            "size": p.stat().st_size,
+            "sha256": h.hexdigest(),
+        }
     runs = old.get("runs", []) + [{**info, "version": __version__}]
     path.write_text(json.dumps({"runs": runs, "raw": raw}, indent=1) + "\n", "utf-8")
 
@@ -168,9 +181,18 @@ def write_manifest(out_root, info):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, help="corpus output directory")
-    parser.add_argument("--langs", help="comma-separated language codes (default: every ISO3 entry)")
-    parser.add_argument("--domains", default="tatoeba,cc100,wiki,leipzig", help="comma-separated subset of domains")
-    parser.add_argument("--max-docs-per-lang", type=int, default=300, help="cap per language per domain, tripled for wiki (default: 300)")
+    parser.add_argument(
+        "--langs", help="comma-separated language codes (default: every ISO3 entry)"
+    )
+    parser.add_argument(
+        "--domains", default="tatoeba,cc100,wiki,leipzig", help="comma-separated subset of domains"
+    )
+    parser.add_argument(
+        "--max-docs-per-lang",
+        type=int,
+        default=300,
+        help="cap per language per domain, tripled for wiki (default: 300)",
+    )
     parser.add_argument("--jobs", type=int, default=4, help="parallel downloads (cc100/wiki)")
     parser.add_argument("--wiki-date", help="cirrus dump date YYYYMMDD (default: latest complete)")
     args = parser.parse_args(argv)
@@ -185,14 +207,27 @@ def main(argv=None):
     if "cc100" in domains:
         # zh-Hans and zh-Hant are separate cc100 files: no routing, or the two writers collide
         own = {c for c in CC100_CODE if ALT_CLASS.get(c, c) in langs}
-        gather_domain("cc100", cc100_docs, sorted(set(langs) | own), args.jobs, out_root,
-                      max_docs, no_split=own)
+        gather_domain(
+            "cc100",
+            cc100_docs,
+            sorted(set(langs) | own),
+            args.jobs,
+            out_root,
+            max_docs,
+            no_split=own,
+        )
     info = {"langs": langs, "max_docs_per_lang": max_docs}
     if "wiki" in domains:
         date = info["wiki_date"] = args.wiki_date or latest_cirrus_date()
         print(f"wiki: cirrus dump {date}")
-        gather_domain("wiki", lambda lang: wiki_docs(lang, date), langs, args.jobs, out_root,
-                      WIKI_DOCS_FACTOR * max_docs)
+        gather_domain(
+            "wiki",
+            lambda lang: wiki_docs(lang, date),
+            langs,
+            args.jobs,
+            out_root,
+            WIKI_DOCS_FACTOR * max_docs,
+        )
     if "tatoeba" in domains:
         docs = tatoeba_docs(langs, 3 * max_docs)  # spares for doc-rule skips and the wuu quota
         for lang in SPLIT_SCRIPT.keys() & docs.keys():  # both script classes share one budget

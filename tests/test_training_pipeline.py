@@ -1,4 +1,5 @@
 """Smoke test for the training pipeline (end-to-end with synthetic data)."""
+
 import numpy as np
 import pytest
 
@@ -10,15 +11,23 @@ from .conftest import write_corpus
 
 SR = "ово је српски текст за пробу овде"
 TEXTS = {
-    "en": ["The quick brown fox jumps over the lazy dog and the cat sleeps",
-           "London is the capital of England and a very large city indeed"],
-    "de": ["Der schnelle braune Fuchs springt ueber den faulen Hund heute",
-           "Berlin ist die Hauptstadt von Deutschland und eine grosse Stadt"],
-    "fr": ["Le renard brun rapide saute par dessus le chien paresseux ici",
-           "Paris est la capitale de la France et une tres grande ville bien"],
+    "en": [
+        "The quick brown fox jumps over the lazy dog and the cat sleeps",
+        "London is the capital of England and a very large city indeed",
+    ],
+    "de": [
+        "Der schnelle braune Fuchs springt ueber den faulen Hund heute",
+        "Berlin ist die Hauptstadt von Deutschland und eine grosse Stadt",
+    ],
+    "fr": [
+        "Le renard brun rapide saute par dessus le chien paresseux ici",
+        "Paris est la capitale de la France et une tres grande ville bien",
+    ],
     "sr": [SR, SR + " jos"],
-    "srl": ["ovo je srpski tekst za probu ovde i jos malo teksta dodato",
-            "ovo je srpski tekst za probu ovde i jos malo teksta dodato jos"],
+    "srl": [
+        "ovo je srpski tekst za probu ovde i jos malo teksta dodato",
+        "ovo je srpski tekst za probu ovde i jos malo teksta dodato jos",
+    ],
 }
 
 
@@ -44,7 +53,7 @@ def test_training_pipeline(tmp_path):
 
     # features without counts above COUNT_FLOOR in any class are dropped
     n = len(model.features)
-    assert n and np.unique(model.counts.index % n).size == n
+    assert n and np.unique(model.counts.cells % n).size == n
 
     lang, _ = LanguageIdentifier.from_modelpath(str(model_path)).classify("This is a test")
     assert isinstance(lang, str)
