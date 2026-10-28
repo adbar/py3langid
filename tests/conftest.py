@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import py3langid.langid as mod
-from py3langid.modelio import WordTable
+from py3langid.modelio import WordTable, load_model
 
 NO_WORDS = WordTable(
     b"", np.zeros(1, dtype=np.int32), np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float32)
@@ -15,7 +15,7 @@ NO_WORDS = WordTable(
 
 def write_corpus(root, docs):
     """root/<domain>/<lang>/docNNNN.txt per (domain, lang, data). Returns walk_corpus items."""
-    items = []
+    items: list[tuple[str, str, str]] = []
     for domain, lang, data in docs:
         cell = root / domain / lang
         cell.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,7 @@ def tokenize_order2(monkeypatch):
 @pytest.fixture(scope="session", autouse=True)
 def _shipped_model_loaded_once():
     """every load of the shipped model reuses one read: Model arrays are never mutated"""
-    real, shipped = mod.load_model, mod.MODEL_FILE.resolve()
+    real, shipped = load_model, mod.MODEL_FILE.resolve()
     cached = functools.cache(lambda: real(shipped))
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(

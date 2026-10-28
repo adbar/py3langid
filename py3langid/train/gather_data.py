@@ -11,7 +11,9 @@ import tarfile
 import time
 import urllib.request
 from collections import defaultdict
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
+from typing import BinaryIO, Literal, cast
 
 from .. import __version__
 from . import topup
@@ -40,19 +42,20 @@ USER_AGENT = "py3langid-gather/0.1 (https://github.com/adbar/py3langid)"
 URL = re.compile(r"https?://\S+")
 
 
-def fetch(url, headers=None, retries=3):
+def fetch(url: str, headers: dict[str, str] | None = None, retries: int = 3) -> BinaryIO:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    for attempt in range(retries):
+    for _ in range(retries - 1):
         try:
-            return urllib.request.urlopen(req, timeout=120)
+            return cast("BinaryIO", urllib.request.urlopen(req, timeout=120))
         except Exception as e:
             code = getattr(e, "code", None)
-            if code == 404 or attempt == retries - 1:
+            if code == 404:
                 raise
             time.sleep(60 if code == 429 else 5)
+    return cast("BinaryIO", urllib.request.urlopen(req, timeout=120))
 
 
-def fetch_cached(url, cache_path, headers=None):
+def fetch_cached(url: str, cache_path: Path, headers: dict[str, str] | None = None) -> BinaryIO:
     """Download to cache_path once; return open binary handle."""
     if not cache_path.exists():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,22 +67,22 @@ def fetch_cached(url, cache_path, headers=None):
     return open(cache_path, "rb")
 
 
-def fetch_head(url, cache_path, size):
+def fetch_head(url: str, cache_path: Path, size: int) -> BinaryIO:
     """The first *size* bytes of url, cached."""
     return fetch_cached(
         url, cache_path.with_name(f"{cache_path.name}.head{size}"), {"Range": f"bytes=0-{size - 1}"}
     )
 
 
-def _tar_lines(resp, mode, suffix):
+def _tar_lines(resp: BinaryIO, mode: Literal["r|bz2", "r|gz"], suffix: str) -> Iterator[bytes]:
     """Lines of the members ending with suffix."""
     with tarfile.open(fileobj=resp, mode=mode) as tar:
         for member in tar:
-            if member.name.endswith(suffix):
-                yield from tar.extractfile(member)
+            if member.name.endswith(suffix) and (f := tar.extractfile(member)) is not None:
+                yield from f
 
 
-def cc100_docs(lang):
+def cc100_docs(lang: str) -> list[bytes]:
     code = CC100_CODE.get(lang, lang)
     with fetch_head(
         CC100_URL.format(code=code), RAW_CACHE / "cc100" / f"{code}.txt.xz", CC100_RANGE
@@ -89,7 +92,7 @@ def cc100_docs(lang):
     return data.split(b"\n\n")[:-1]
 
 
-def novel_sentences(text, seen):
+def novel_sentences(text: str, seen: set[str]) -> bytes:
     """Unseen sentences, one per line (bot stubs repeat template sentences)."""
     out = []
     for sent in SENT_SPLIT.split(URL.sub("", text)):
@@ -100,10 +103,11 @@ def novel_sentences(text, seen):
     return "\n".join(out).encode("utf-8")
 
 
-def wiki_docs(lang, date):
+def wiki_docs(lang: str, date: str) -> Iterator[bytes]:
     """One doc per opening_text (full "text" carries reference sections in other languages)."""
     code = WIKI_CODE.get(lang, lang)
-    seen, dec, buf = set(), bz2.BZ2Decompressor(), b""
+    seen: set[str] = set()
+    dec, buf = bz2.BZ2Decompressor(), b""
     with fetch_head(
         CIRRUS_URL.format(code=code, date=date),
         RAW_CACHE / "wiki" / f"{code}wiki-{date}.json.bz2",
@@ -117,11 +121,12 @@ def wiki_docs(lang, date):
                     yield novel_sentences(text, seen)
 
 
-def tatoeba_docs(langs, max_docs):
+def tatoeba_docs(langs: Iterable[str], max_docs: int) -> dict[str, list[bytes]]:
     """{lang: packed docs}, up to max_docs per lang."""
     by_iso3 = {ISO3[lang].encode(): lang for lang in langs if lang in ISO3}
     budget = max_docs * PACK_TARGET  # raw bytes kept per lang before packing
-    rows, size = defaultdict(list), defaultdict(int)
+    rows: defaultdict[str, list[bytes]] = defaultdict(list)
+    size: defaultdict[str, int] = defaultdict(int)
     with fetch_cached(TATOEBA_URL, RAW_CACHE / "tatoeba" / "sentences.tar.bz2") as resp:
         for raw in _tar_lines(resp, "r|bz2", "sentences.csv"):
             parts = raw.rstrip(b"\n").split(b"\t")
@@ -134,7 +139,7 @@ def tatoeba_docs(langs, max_docs):
     return {lang: list(pack_docs(sents))[:max_docs] for lang, sents in rows.items()}
 
 
-def leipzig_docs(lang):
+def leipzig_docs(lang: str) -> Iterator[bytes]:
     name = LEIPZIG_NAME.get(lang)
     if not name:
         return
@@ -152,15 +157,15 @@ def leipzig_docs(lang):
         yield "\n".join(sentences[i : i + LEIPZIG_SENTS]).encode("utf-8")
 
 
-def latest_cirrus_date():
+def latest_cirrus_date() -> str:
     html = fetch(CIRRUS_INDEX).read().decode()
-    dates = sorted(set(re.findall(r'href="(\d{8})/"', html)))
+    dates: list[str] = sorted(set(re.findall(r'href="(\d{8})/"', html)))
     if not dates:
         raise RuntimeError(f"no dumps listed at {CIRRUS_INDEX}; pass --wiki-date")
     return dates[-2] if len(dates) > 1 else dates[-1]
 
 
-def write_manifest(out_root, info):
+def write_manifest(out_root: Path, info: dict[str, object]) -> None:
     """MANIFEST.json: settings of every gather run and the raw files read."""
     path = out_root / "MANIFEST.json"
     old = json.loads(path.read_text("utf-8")) if path.exists() else {}
@@ -178,7 +183,7 @@ def write_manifest(out_root, info):
     path.write_text(json.dumps({"runs": runs, "raw": raw}, indent=1) + "\n", "utf-8")
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, help="corpus output directory")
     parser.add_argument(
@@ -216,7 +221,7 @@ def main(argv=None):
             max_docs,
             no_split=own,
         )
-    info = {"langs": langs, "max_docs_per_lang": max_docs}
+    info: dict[str, object] = {"langs": langs, "max_docs_per_lang": max_docs}
     if "wiki" in domains:
         date = info["wiki_date"] = args.wiki_date or latest_cirrus_date()
         print(f"wiki: cirrus dump {date}")

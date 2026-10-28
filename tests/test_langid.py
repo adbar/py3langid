@@ -334,6 +334,17 @@ def test_cli_batch(tmp_path):
     assert results[str(en)] == "en" and results[str(fr)] == "fr"
 
 
+def test_cli_batch_dist(tmp_path, identifier):
+    """Batch mode with -d writes every label's score, best label second"""
+    en = tmp_path / "en.txt"
+    en.write_bytes(b"This is an English text for testing purposes.")
+    out = subprocess.check_output(["langid", "-b", "-d"], input=f"{en}\n".encode()).decode()
+    header, row = csv.reader(out.strip().splitlines())
+    assert header == ["path", "language", *identifier.labels]
+    scores = dict(zip(header[2:], map(float, row[2:])))
+    assert row[:2] == [str(en), "en"] and max(scores, key=scores.__getitem__) == "en"
+
+
 def test_cli_external_model(cli, tmp_path):
     """-m loads an outside model, an unusable one raises"""
     model_path = tmp_path / "external.npz.xz"
@@ -360,9 +371,9 @@ def cli(monkeypatch):
     """Run langid.main() in-process on piped stdin, returning captured stdout."""
 
     def run(argv, stdin=""):
-        monkeypatch.setattr(mod.sys, "stdin", io.StringIO(stdin))
+        monkeypatch.setattr(sys, "stdin", io.StringIO(stdin))
         out = io.StringIO()
-        monkeypatch.setattr(mod.sys, "stdout", out)
+        monkeypatch.setattr(sys, "stdout", out)
         mod.main(argv)
         return out.getvalue()
 

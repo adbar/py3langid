@@ -2,7 +2,9 @@
 
 import re
 from collections import defaultdict
+from collections.abc import Iterable, Iterator, Mapping
 from functools import partial
+from pathlib import Path
 
 from .common import ALT_CLASS, walk_corpus
 from .sources import ISO3
@@ -36,10 +38,10 @@ PARTIAL = ".partial"  # marks a class dir whose stream failed
 _CONFIG_RE = re.compile(r"[a-z]{3}[-_][A-Z][a-z]{3}")
 
 
-def _repo_configs(repo):
+def _repo_configs(repo: str) -> dict[str, set[str]]:
     from huggingface_hub import list_repo_files
 
-    configs = defaultdict(set)
+    configs: defaultdict[str, set[str]] = defaultdict(set)
     for f in list_repo_files(repo, repo_type="dataset", revision=REVISION[repo]):
         for comp in f.split("/"):
             if _CONFIG_RE.fullmatch(comp):
@@ -48,7 +50,7 @@ def _repo_configs(repo):
     return configs
 
 
-def _glot_config(configs, cls):
+def _glot_config(configs: Mapping[str, set[str]], cls: str) -> str | None:
     base = ALT_CLASS.get(cls, cls)
     cands = sorted(configs.get(GLOT_ISO3.get(base) or ISO3.get(base) or "", ()))
     if len(cands) > 1:
@@ -57,7 +59,7 @@ def _glot_config(configs, cls):
     return cands[0] if len(cands) == 1 else None
 
 
-def _glot_docs(repo, field, configs, cls):
+def _glot_docs(repo: str, field: str, configs: Mapping[str, set[str]], cls: str) -> Iterator[bytes]:
     config = _glot_config(configs, cls)
     if not config:
         raise LookupError("no config")
@@ -67,9 +69,9 @@ def _glot_docs(repo, field, configs, cls):
     return pack_docs(row[field] for row in ds if row.get("dataset") not in EVAL_SOURCES)
 
 
-def needy(out_root, classes):
+def needy(out_root: Path, classes: Iterable[str]) -> list[str]:
     """Classes with fewer than TOPUP_MIN_DOMAINS domains of TOPUP_DOMAIN_DOCS docs."""
-    counts = defaultdict(lambda: defaultdict(int))
+    counts: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
     for domain, cls, _path in walk_corpus(out_root):
         counts[cls][domain] += 1
     return [
@@ -80,7 +82,7 @@ def needy(out_root, classes):
     ]
 
 
-def gather_topup(out_root, langs, max_docs, jobs=4):
+def gather_topup(out_root: Path, langs: list[str], max_docs: int, jobs: int = 4) -> None:
     classes = langs + [alt for alt, lang in ALT_CLASS.items() if lang in langs]
     thin = needy(out_root, classes)
     print(f"topup: {len(thin)} thin classes: {thin}")

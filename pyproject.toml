@@ -89,9 +89,13 @@ warn_redundant_casts = true
 module = ["datasets", "huggingface_hub"]  # optional training dependencies
 ignore_missing_imports = true
 
-# --strict on the inference code (strict itself is global-only)
 [[tool.mypy.overrides]]
-module = ["py3langid", "py3langid.dfa", "py3langid.langid", "py3langid.modelio", "py3langid.server"]
+module = ["tests.*"]
+check_untyped_defs = true
+
+# --strict on the package (strict itself is global-only)
+[[tool.mypy.overrides]]
+module = ["py3langid", "py3langid.*"]
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_incomplete_defs = true

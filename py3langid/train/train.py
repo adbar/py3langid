@@ -3,23 +3,24 @@
 import argparse
 import os
 from collections import Counter
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 
-from ..modelio import Model, save_model, sparse_counts
+from ..modelio import IntArray, Model, save_model, sparse_counts
 from .common import ALT_CLASS, COUNT_FLOOR, FEATURES_PER_LANG, walk_corpus
 from .shards import build_shards, count_matrices, merge_docfreq
 from .stages import compute_IG, feature_counts, ngram_select, select_LD_features
 from .words import build_words
 
 
-def _axis(values):
+def _axis(values: Iterable[str]) -> tuple[list[str], IntArray, dict[str, int]]:
     """(names in first-appearance order, count array, name→column) of *values*."""
     counts = Counter(values)
     return list(counts), np.array(list(counts.values())), {n: i for i, n in enumerate(counts)}
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model", help="save output to MODEL_DIR", metavar="MODEL_DIR")
     parser.add_argument(

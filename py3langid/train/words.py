@@ -4,12 +4,14 @@ Han pair bigram credits between the Chinese classes and Japanese."""
 
 import math
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
 
 from ..langid import CJK_CLASSES
 from ..modelio import WordTable
-from .shards import TOKENS, load_shard
+from .common import Item
+from .shards import load_tokens
 
 ENTRY_MIN_DF = 2  # a class credit needs the word in this many of its docs
 DOC_OFFSET = 500  # docs added to every class total: damps thin-class credits
@@ -26,7 +28,12 @@ BIGRAM_WEIGHT = 0.5
 BIGRAM_MIN_COUNT = 3  # pair occurrences over the bigram classes
 
 
-def _markers(df, ndocs, classes, lang_index):
+def _markers(
+    df: Mapping[str, Counter[str]],
+    ndocs: Mapping[str, int],
+    classes: Sequence[str],
+    lang_index: Mapping[str, int],
+) -> dict[str, int]:
     """{char or Han pair: column} for those near-exclusive to one marker class."""
     out = {}
     for ch in set().union(*(df[c] for c in classes)):
@@ -43,13 +50,15 @@ def _markers(df, ndocs, classes, lang_index):
     return {t: c for t, c in out.items() if len(t) == 1 or c not in (out.get(t[0]), out.get(t[1]))}
 
 
-def _bigrams(han, classes, lang_index):
+def _bigrams(
+    han: Mapping[str, Counter[str]], classes: Sequence[str], lang_index: Mapping[str, int]
+) -> dict[str, list[tuple[int, float]]]:
     """{Han pair: [(column, credit)]}: log P(b|a,c) - log P(b|c), lowest class at 0."""
     uni = [Counter({t: n for t, n in han[c].items() if len(t) == 1}) for c in classes]
     bi = [Counter({t: n for t, n in han[c].items() if len(t) == 2}) for c in classes]
-    ctx = [Counter() for _ in classes]
-    for k, b in enumerate(bi):
-        for ab, n in b.items():
+    ctx: list[Counter[str]] = [Counter() for _ in classes]
+    for k, pairs in enumerate(bi):
+        for ab, n in pairs.items():
             ctx[k][ab[0]] += n
     total = sum(bi, Counter())
     v_size = len(set().union(*uni)) + 1
@@ -58,7 +67,7 @@ def _bigrams(han, classes, lang_index):
     for ab, n in total.items():
         if n < BIGRAM_MIN_COUNT:
             continue
-        a, b = ab
+        a, b = ab[0], ab[1]
         v = []
         for k in range(len(classes)):
             p = (uni[k][b] + 1) / norm[k]
@@ -72,22 +81,20 @@ def _bigrams(han, classes, lang_index):
     return out
 
 
-def _min_df(word):
+def _min_df(word: str) -> int:
     """Docs a word needs in some class: long words match as often but cost more bytes."""
     n = len(word.encode())
     return 2 if n <= 8 else 4 if n <= 14 else 6
 
 
-def build_words(shard_items, lang_index):
+def build_words(shard_items: Iterable[Item], lang_index: Mapping[str, int]) -> WordTable:
     """WordTable of credits of at least CREDIT_FLOOR, Han bigram credits excepted."""
-    word_df, df, ndocs, han = (
-        defaultdict(Counter),
-        defaultdict(Counter),
-        Counter(),
-        defaultdict(Counter),
-    )
+    word_df: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    df: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    han: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    ndocs: Counter[str] = Counter()
     for _, lang, shard_path in shard_items:
-        words, chars, n, han_counts = load_shard(shard_path, TOKENS)
+        words, chars, n, han_counts = load_tokens(shard_path)
         word_df[lang].update(words)
         ndocs[lang] += n
         if lang in CJK_CLASSES:
@@ -95,17 +102,18 @@ def build_words(shard_items, lang_index):
             han[lang].update(han_counts)
     classes = [c for c in CJK_CLASSES if c in lang_index]
     n_all = sum(ndocs.values())
-    total, keep = Counter(), set()
+    total: Counter[str] = Counter()
+    keep: set[str] = set()
     for c in word_df.values():
         total.update(c)
         keep.update(w for w, n in c.items() if n >= _min_df(w))
-    rows = defaultdict(list)  # token -> (class column, credit)
+    rows: defaultdict[str, list[tuple[int, float]]] = defaultdict(list)  # token -> (column, credit)
     if len(classes) >= 2:
         for ch, col in _markers(df, ndocs, classes, lang_index).items():
             rows[ch].append((col, MARKER_WEIGHT))
         for ab, entries in _bigrams(han, classes, lang_index).items():
             rows[ab].extend(entries)
-    for lang in sorted(word_df, key=lang_index.get):  # deterministic CSR order
+    for lang in sorted(word_df, key=lang_index.__getitem__):  # deterministic CSR order
         c, col, log_docs = word_df[lang], lang_index[lang], math.log(ndocs[lang] + DOC_OFFSET)
         for w, n in c.items():
             if w in keep and n >= ENTRY_MIN_DF:

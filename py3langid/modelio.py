@@ -90,12 +90,10 @@ def save_model(path: StrPath, model: Model) -> None:
     q = np.round(vals / scale).astype(np.uint8)  # 8-bit credits
     keep = q > 0  # zero credits score nothing, rows stay so lookups still match
     arrays["wt_vocab"] = np.frombuffer(words.vocab, dtype=np.uint8)
-    arrays["wt_indptr"] = np.concatenate(([0], np.cumsum(keep)))[np.asarray(words.indptr)].astype(
-        np.int32
-    )
-    arrays["wt_cols"] = np.asarray(words.cols, dtype=np.uint8 if n_classes <= 256 else np.int32)[
-        keep
-    ]
+    kept = np.concatenate(([0], np.cumsum(keep)))  # kept entries before each row
+    col_dtype = np.uint8 if n_classes <= 256 else np.int32
+    arrays["wt_indptr"] = kept[np.asarray(words.indptr)].astype(np.int32)
+    arrays["wt_cols"] = np.asarray(words.cols, dtype=col_dtype)[keep]
     arrays["wt_vals"] = q[keep]
     arrays["wt_scale"] = np.array([scale], dtype=np.float32)
     buffer = io.BytesIO()

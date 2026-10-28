@@ -4,6 +4,7 @@ import base64
 import json
 import random
 import string
+from collections.abc import Callable
 from pathlib import Path
 
 from .common import cap_bytes
@@ -11,7 +12,7 @@ from .common import cap_bytes
 DOCS_PER_DOMAIN = 300
 DOMAIN_SEEDS = {"wiki": 1, "cc100": 2}
 
-GENRES = (
+GENRES: tuple[Callable[[random.Random, int], str], ...] = (
     lambda rng, n: " ".join(str(rng.randint(0, 10 ** rng.randint(1, 9))) for _ in range(8)),
     lambda rng, n: "".join(rng.choice("!@#$%^&*()_+-=[]{};:,.<>/?|~`\"'\\") for _ in range(n)),
     lambda rng, n: "".join(rng.choice(string.ascii_letters + " ") for _ in range(n)),
@@ -44,13 +45,13 @@ GENRES = (
 )
 
 
-def _doc(rng):
+def _doc(rng: random.Random) -> bytes:
     genre = GENRES[rng.randrange(len(GENRES))]
     lines = [genre(rng, rng.randint(20, 70)) for _ in range(rng.randint(30, 60))]
     return cap_bytes("\n".join(lines).encode())
 
 
-def ensure_zxx(corpus):
+def ensure_zxx(corpus: str | Path) -> int:
     """Write zxx dirs if absent. Returns docs written."""
     written = 0
     for domain, seed in DOMAIN_SEEDS.items():

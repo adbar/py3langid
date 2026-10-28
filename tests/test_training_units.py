@@ -12,13 +12,13 @@ from py3langid.train import words as W
 from py3langid.train.common import MAX_NGRAM_ORDER, read_doc, walk_corpus
 from py3langid.train.shards import (
     COUNT_DTYPE,
-    TOKENS,
     _build_shard,
     _group_key,
     build_shards,
     count_matrices,
     doc_ngrams,
-    load_shard,
+    load_docfreq,
+    load_tokens,
     merge_docfreq,
 )
 from py3langid.train.stages import (
@@ -206,7 +206,7 @@ def test_doc_cap_truncates(tmp_path, monkeypatch, tokenize_order2, doc_cap, expe
     shard = tmp_path / "shard"
     _build_shard((str(shard), _group_key([str(doc)]), [str(doc)]))
     # the bigrams of b"abcdef" are distinct: one doc each
-    assert load_shard(str(shard)) == dict.fromkeys(expected, 1)
+    assert load_docfreq(str(shard)) == dict.fromkeys(expected, 1)
 
 
 def test_build_shards_cache(tmp_path, tokenize_order2):
@@ -217,10 +217,10 @@ def test_build_shards_cache(tmp_path, tokenize_order2):
     assert (domain, lang) == ("web", "en")
     # shards carry document frequency only -- the NB numerators come from
     # feature_counts, so total occurrence counts are never stored
-    docfreq = load_shard(shard_path)
+    docfreq = load_docfreq(shard_path)
     assert docfreq == {b"ab": 2, b"ba": 1}
     # word df, CJK df, docs, Han counts
-    assert load_shard(shard_path, TOKENS) == ({"abab": 1, "ab": 1}, {}, 2, {})
+    assert load_tokens(shard_path) == ({"abab": 1, "ab": 1}, {}, 2, {})
 
     # unchanged corpus: shard is reused, not rewritten
     mtime = os.path.getmtime(shard_path)
@@ -230,7 +230,7 @@ def test_build_shards_cache(tmp_path, tokenize_order2):
     # changed doc invalidates and rebuilds the shard
     doc0.write_bytes(b"zzzz")
     build_shards(items, shard_dir, jobs=1)
-    docfreq = load_shard(shard_path)
+    docfreq = load_docfreq(shard_path)
     assert docfreq[b"ab"] == 1  # only doc1 still has it
     assert docfreq[b"zz"] == 1
 
@@ -267,12 +267,12 @@ def test_shard_cache_keyed_on_tokenization(tmp_path, monkeypatch):
     items, shard_dir = make_corpus(tmp_path, [("web", "zh", "中文abcdef".encode())])
 
     [(_, _, shard_path)] = build_shards(items, shard_dir, jobs=1)
-    terms = load_shard(shard_path)
+    terms = load_docfreq(shard_path)
     assert max(len(t) for t in terms) == MAX_NGRAM_ORDER
 
     monkeypatch.setattr("py3langid.train.shards.MAX_NGRAM_ORDER", 3)
     build_shards(items, shard_dir, jobs=1)
-    terms = load_shard(shard_path)
+    terms = load_docfreq(shard_path)
     # rebuilt at the new order: the 4- and 5-grams are gone, not inherited
     assert max(len(t) for t in terms) == 3
 
@@ -365,7 +365,7 @@ def test_build_words_one_cjk_class(tmp_path):
 def test_build_shards_han_counts(tmp_path):
     items, shard_dir = make_corpus(tmp_path, [("web", "zh", "中文中 a".encode())] * 2)
     [(_, _, shard_path)] = build_shards(items, shard_dir, jobs=1)
-    assert load_shard(shard_path, TOKENS)[3] == {"中": 4, "文": 2, "中文": 2, "文中": 2}
+    assert load_tokens(shard_path)[3] == {"中": 4, "文": 2, "中文": 2, "文中": 2}
 
 
 def test_build_words_bigrams(tmp_path):

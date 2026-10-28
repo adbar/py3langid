@@ -2,6 +2,7 @@ import io
 import lzma
 import pickle
 import tempfile
+from typing import Any
 
 import numpy as np
 import pytest
@@ -68,7 +69,7 @@ def test_counts_shape_checked(tmp_path):
 
 def test_unsupported_legacy_layout_rejected(tmp_path):
     """a stored-DFA model (0.5.0 development) is refused by name, not with a bare KeyError"""
-    arrays = {
+    arrays: dict[str, Any] = {
         "ptc": np.zeros((4, 2), dtype=np.float16),
         "pc": np.array([0.5, 0.5], dtype=np.float32),
         "classes": np.array(["en", "fr"]),

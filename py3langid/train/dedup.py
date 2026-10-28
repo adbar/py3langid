@@ -18,14 +18,14 @@ URL = re.compile(rb"https?://\S+")
 EVAL_LINES = Path(__file__).with_name("eval_lines.npy")
 
 
-def line_hash(line):
+def line_hash(line: bytes) -> int:
     key = normalize(line)[1].strip().encode("utf8", errors="surrogatepass")
     return int.from_bytes(blake2b(key, digest_size=8).digest(), "little")
 
 
-def dedup(corpus):
+def dedup(corpus: str | Path) -> int:
     """Returns lines removed."""
-    seen = defaultdict(set)
+    seen: defaultdict[str, set[bytes]] = defaultdict(set)
     evals = set(np.load(EVAL_LINES).tolist())
     removed, empty = 0, []
     for _domain, lang, path in walk_corpus(corpus, skip_langs=("zxx",)):

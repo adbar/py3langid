@@ -10,7 +10,8 @@ import pytest
 
 from py3langid.train import gather_data, topup, writer
 from py3langid.train.common import DOC_CAP, MIN_DOC, hant_majority
-from py3langid.train.gather_data import CC100_CODE, ISO3, WIKI_CODE, novel_sentences
+from py3langid.train.gather_data import novel_sentences
+from py3langid.train.sources import CC100_CODE, ISO3, WIKI_CODE
 from py3langid.train.writer import valid_doc, write_docs
 
 HANT, HANS = "這是繁體中文的測試，我們會說這個", "这是简体中文的测试，我们会说这个"
@@ -111,12 +112,13 @@ def test_fetch_cached(tmp_path, monkeypatch):
 
 def test_valid_doc_cuts_on_codepoint_boundary():
     doc = valid_doc(("a" + "é" * DOC_CAP).encode())  # a naive slice ends mid-codepoint
+    assert doc is not None
     assert len(doc) == DOC_CAP - 1
     doc.decode("utf-8")
 
 
 def test_novel_sentences_drops_repeats_and_urls():
-    seen = set()
+    seen: set[str] = set()
     first = novel_sentences("HD 1 is a star. It is hot. See https://x.y/z now.", seen)
     assert first == b"HD 1 is a star.\nIt is hot.\nSee now."
     assert novel_sentences("HD 2 is a star. It is hot.", seen) == b"HD 2 is a star."
@@ -213,9 +215,12 @@ def test_cc100_split_scripts_have_their_own_writers(tmp_path, monkeypatch):
 
 def test_default_langs_are_iso3(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        gather_data, "tatoeba_docs", lambda langs, max_docs: seen.append(langs) or {}
-    )
+
+    def tatoeba_docs(langs, max_docs):
+        seen.append(langs)
+        return {}
+
+    monkeypatch.setattr(gather_data, "tatoeba_docs", tatoeba_docs)
     gather_data.main(["--output", str(tmp_path), "--domains", "tatoeba"])
     assert seen == [list(ISO3)] and "zxx" not in ISO3
 

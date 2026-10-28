@@ -1,7 +1,9 @@
 """Write gathered docs into corpus cells."""
 
 from collections import defaultdict
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .common import ALT_CLASS, MIN_DOC, SPLIT_SCRIPT, cap_bytes, class_of, hant_majority
 from .rules import DOC_RULES
@@ -17,16 +19,16 @@ class DocWriter:
     langs route to the alt dir, split=False skips the other script instead.
     Docs failing their class doc rule are skipped, so cells fill with passing docs."""
 
-    def __init__(self, out_dir, max_docs, split=True):
+    def __init__(self, out_dir: Path, max_docs: int, split: bool = True) -> None:
         self.out_dir = out_dir
         self.lang = out_dir.name
         self.max_docs = max_docs
         self.alt = SPLIT_SCRIPT.get(self.lang, (None,))[0] if split else None
         self.quota = SCRIPT_QUOTA.get(self.lang)
         self.quota_left = max_docs // 2 if self.quota else 0
-        self.counts = defaultdict(int)
+        self.counts: defaultdict[str, int] = defaultdict(int)
 
-    def write(self, doc):
+    def write(self, doc: bytes) -> None:
         cls = class_of(ALT_CLASS.get(self.lang, self.lang), doc)
         if self.alt is None and cls != self.lang:
             return
@@ -35,14 +37,14 @@ class DocWriter:
             return
         d = self.out_dir.with_name(cls)
         if self.counts[cls] >= self.max_docs:
-            if not (self.quota_left and self.quota(doc)):
+            if not (self.quota_left and self.quota and self.quota(doc)):
                 return
             self.quota_left -= 1
         d.mkdir(parents=True, exist_ok=True)
         (d / f"doc{self.counts[cls]:04d}.txt").write_bytes(doc)
         self.counts[cls] += 1
 
-    def fill(self, docs):
+    def fill(self, docs: Iterable[bytes]) -> int:
         """Write valid docs until done."""
         for doc in map(valid_doc, docs):
             if doc is None:
@@ -53,7 +55,7 @@ class DocWriter:
         return self.total
 
     @property
-    def done(self):
+    def done(self) -> bool:
         if self.quota_left:  # reads on for minority docs until the quota fills or the source ends
             return False
         if self.alt:
@@ -61,21 +63,22 @@ class DocWriter:
         return self.counts[self.lang] >= self.max_docs
 
     @property
-    def total(self):
+    def total(self) -> int:
         return sum(self.counts.values())
 
 
-def valid_doc(doc):
+def valid_doc(doc: bytes) -> bytes | None:
     """Strip, cap, drop stubs. Returns bytes or None."""
     doc = cap_bytes(doc.strip())
     return doc if len(doc) >= MIN_DOC else None
 
 
-def pack_docs(rows):
+def pack_docs(rows: Iterable[str | bytes]) -> Iterator[bytes]:
     """Pack small rows (str or bytes) into ~PACK_TARGET-byte docs; large rows pass through.
     A row of MIN_DOC bytes passes alone, so non-Latin scripts get short docs.
     Packing everything to DOC_CAP was measured worse on CommonLID (-0.13)."""
-    buf, size = [], 0
+    buf: list[bytes] = []
+    size = 0
     for row in rows:
         raw = row.encode("utf-8") if isinstance(row, str) else row
         if len(raw) >= MIN_DOC:
@@ -90,11 +93,19 @@ def pack_docs(rows):
         yield b"\n".join(buf)
 
 
-def write_docs(out_dir, docs, max_docs, split=True):
+def write_docs(out_dir: Path, docs: Iterable[bytes], max_docs: int, split: bool = True) -> int:
     return DocWriter(out_dir, max_docs, split).fill(docs)
 
 
-def gather_domain(name, docs_of, langs, jobs, out_root, max_docs, no_split=()):
+def gather_domain(
+    name: str,
+    docs_of: Callable[[str], Iterable[bytes]],
+    langs: Sequence[str],
+    jobs: int,
+    out_root: Path,
+    max_docs: int,
+    no_split: Collection[str] = (),
+) -> dict[str, int]:
     """Write docs_of(lang) for every lang whose dir is not full yet.
     no_split: langs whose source is already script-pure (no routing to the alt dir)."""
     # only the primary dir gates completion: minority-script dirs may never
@@ -104,9 +115,9 @@ def gather_domain(name, docs_of, langs, jobs, out_root, max_docs, no_split=()):
     ]
     if len(todo) < len(langs):
         print(f"{name}: {len(langs) - len(todo)} langs already complete")
-    counts = {}
+    counts: dict[str, int] = {}
 
-    def one(lang):
+    def one(lang: str) -> None:
         try:
             counts[lang] = write_docs(
                 out_root / name / lang, docs_of(lang), max_docs, split=lang not in no_split
