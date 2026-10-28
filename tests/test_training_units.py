@@ -87,7 +87,7 @@ def test_doc_ngrams_bounded_by_max_order():
 
 def test_compute_IG_nonbinarized():
     # 2 events with 2 docs each. b'aa' occurs only in event 0 (perfectly
-    # discriminative, IG = log 2); b'bb' occurs once per event (IG = 0).
+    # discriminative, IG = log 2). b'bb' occurs once per event (IG = 0).
     cm = np.array([[2, 0], [1, 1]])
     dist = np.array([2, 2])
     ig = compute_IG(cm, dist)
@@ -339,7 +339,7 @@ def test_build_words_markers(tmp_path, no_bigrams):
         "他": [(1, credit)],
         "的": [(1, credit)],
     }
-    # shared 書 is no marker and CJK characters get no PMI credit; digits are not tokens
+    # shared 書 is no marker and CJK characters get no PMI credit. Digits are not tokens
     assert "書" not in got and list(got) == sorted(got)
     # fewer than MARKER_MIN_DF docs: no marker
     assert "嘅" not in _table(tmp_path / "b", docs[:2] + docs[W.MARKER_MIN_DF :])

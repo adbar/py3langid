@@ -263,6 +263,10 @@ def test_truncated_bytes_reach_the_str_branch():
     assert normalize(cut)[0] == full[:-2].decode().lower().encode()
     # genuinely undecodable bytes are still passed through untouched
     assert normalize(b"\xff\xfe\xff\xfe")[0] == b"\xff\xfe\xff\xfe"
+    # an invalid byte near the end is not a cut, the tail is kept
+    assert normalize(b"CAF\xe9S")[0] == b"caf\xe9s"
+    assert normalize(b"hello\xffab")[0] == b"hello\xffab"
+    assert normalize(b"\xff")[0] == b"\xff"
 
 
 def test_undecodable_bytes_are_lowered():

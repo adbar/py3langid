@@ -47,7 +47,7 @@ def sparse_counts(dense: npt.ArrayLike) -> Counts:
 class Model(NamedTuple):
     counts: Counts  # NB counts, COUNT_FLOOR applied
     pc: FloatArray  # log priors
-    classes: list[str]  # column labels; aliases repeat
+    classes: list[str]  # column labels, aliases repeat
     features: list[bytes]  # byte n-grams, one per counts row
     words: WordTable
 

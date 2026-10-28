@@ -37,7 +37,7 @@ def normalize(text: str | bytes) -> tuple[bytes, str]:
         try:
             text = raw.decode("utf8")
         except UnicodeDecodeError as e:
-            if e.start < len(raw) - 3:  # not fixable by trimming the tail
+            if e.reason != "unexpected end of data":  # not a cut codepoint
                 text = unicodedata.normalize(
                     "NFC", raw.decode("utf8", errors="surrogateescape").lower()
                 )

@@ -19,7 +19,7 @@ COUNT_FLOOR = 3  # NB counts at or below this are zeroed before smoothing
 CELL_COST = 3  # LD discount per share of classes above COUNT_FLOOR (model cells)
 DOC_CAP = 3000  # byte budget: gathering, tokenization, zxx
 MIN_DOC = 500
-NORMALIZE_VERSION = 8  # bump when normalize or the shard payload changes
+NORMALIZE_VERSION = 9  # bump when normalize or the shard payload changes
 
 Item = tuple[str, str, str]  # (domain, lang, path)
 R = TypeVar("R")

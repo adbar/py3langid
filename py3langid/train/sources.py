@@ -155,7 +155,7 @@ WIKI_CODE = {
 }
 
 # Leipzig Corpora Collection: lang -> archive name (news preferred, wiki fallback).
-# Scanned 2026-08-25; 7 langs have no Leipzig corpus (dz, km, ku, lo, rw, xh, zu).
+# Scanned 2026-08-25. 7 langs have no Leipzig corpus (dz, km, ku, lo, rw, xh, zu).
 LEIPZIG_NAME = {
     "af": "afr_news_2020_30K",
     "am": "amh_wikipedia_2021_30K",
