@@ -129,7 +129,9 @@ Web service
 ``langid -s`` serves language identification over HTTP (default port 9008).
 Use the ``langid`` console script.
 ``python -m py3langid.langid`` is not supported.
-Endpoints ``/detect`` and ``/rank`` accept GET, POST, and PUT:
+Endpoints ``/detect`` and ``/rank`` accept GET with a ``q`` query parameter,
+POST with a form-encoded ``q`` field (JSON is not accepted),
+and PUT with the raw text as body:
 
 .. code-block:: bash
 

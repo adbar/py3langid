@@ -203,9 +203,11 @@ class LanguageIdentifier:
         self.min_confidence = min_confidence
         self._ptc = log_probs(model.counts, len(model.features), len(model.pc))
         self._dfa = build_dfa(model.features)
-        empty = np.empty(0, dtype=np.int64)  # ptc and the DFA replace counts and features
-        self._model = model._replace(counts=Counts(empty, empty), features=[])
+        empty = np.empty(0, dtype=np.int64)  # ptc, the DFA and the word index replace these
         w = model.words
+        self._model = model._replace(
+            counts=Counts(empty, empty), features=[], words=w._replace(vocab=b"")
+        )
         index = {tok: i for i, tok in enumerate(w.vocab.decode("utf8").split("\n"))}
         self._words = (index, w.indptr, w.cols, w.vals)
         self._norm_probs = norm_probs

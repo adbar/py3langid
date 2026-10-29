@@ -111,8 +111,8 @@ def load_model(path: StrPath) -> Model:
         tmp.seek(0)
         if tmp.read(4) != b"PK\x03\x04":  # 0.3.0 models are pickles
             raise ValueError(
-                f"{path}: unsupported model layout, not an npz archive; "
-                "retrain with py3langid.train.train"
+                f"{path}: unsupported model layout, not an npz archive. "
+                "Retrain with py3langid.train.train"
             )
         tmp.seek(0)
         with np.load(tmp, allow_pickle=False) as data:
@@ -120,7 +120,7 @@ def load_model(path: StrPath) -> Model:
             if missing:
                 raise ValueError(
                     f"{path}: unsupported model layout, missing "
-                    f"{sorted(missing)}; retrain with py3langid.train.train"
+                    f"{sorted(missing)}. Retrain with py3langid.train.train"
                 )
             words = WordTable(
                 data["wt_vocab"].tobytes(),
