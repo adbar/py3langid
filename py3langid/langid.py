@@ -6,36 +6,45 @@ import math
 import re
 import sys
 import unicodedata
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from itertools import islice, pairwise
 from operator import itemgetter
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import numpy.typing as npt
 
-from .dfa import build_dfa, visit_counts
-from .modelio import load_model
+from .dfa import DFA, build_dfa, visit_counts
+from .modelio import Counts, FloatArray, IntArray, Model, StrPath, load_model
+
+if TYPE_CHECKING:
+    import argparse
 
 LOGGER = logging.getLogger(__name__)
 
-IDENTIFIER = None
+IDENTIFIER: "LanguageIdentifier | None" = None
 MODEL_DIR = Path(__file__).parent
-MODEL_FILE = MODEL_DIR / 'data/model.npz.xz'
+MODEL_FILE = MODEL_DIR / "data/model.npz.xz"
 RAW_FLOOR = float(np.finfo(np.float32).min)  # finite floor for featureless input
 
 
-def normalize(text):
+def normalize(text: str | bytes) -> tuple[bytes, str]:
     """(lowercased NFC UTF-8 bytes, str) of *text*; bytes lose a partial trailing codepoint,
     undecodable bytes pass through. Shared train/inference contract (train.common.read_doc)."""
     if isinstance(text, bytes):
+        raw = text
         try:
-            text = text.decode('utf8')
+            text = raw.decode("utf8")
         except UnicodeDecodeError as e:
-            if e.start < len(text) - 3:  # not fixable by trimming the tail
-                text = unicodedata.normalize('NFC', text.decode('utf8', errors='surrogateescape').lower())
-                return text.encode('utf8', errors='surrogateescape'), text
-            text = text[:e.start].decode('utf8')
-    text = unicodedata.normalize('NFC', text.lower())
-    return text.encode('utf8', errors='surrogatepass'), text
+            if e.reason != "unexpected end of data":  # not a cut codepoint
+                text = unicodedata.normalize(
+                    "NFC", raw.decode("utf8", errors="surrogateescape").lower()
+                )
+                return text.encode("utf8", errors="surrogateescape"), text
+            text = raw[: e.start].decode("utf8")
+    text = unicodedata.normalize("NFC", text.lower())
+    return text.encode("utf8", errors="surrogatepass"), text
 
 
 CJK = r"\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF"  # one token per character
@@ -79,95 +88,135 @@ LATIN_RE = re.compile(f"[{LATIN}]")
 LATIN_RUN_RE = re.compile(rf"[{LATIN}0-9\udc80-\udcff]+")  # undecodable bytes go too
 LATIN_STRIP_RATIO = 3  # Latin runs dropped up to this many letters per Han char
 # training classes: zht exists only in train/, the model folds it into zh (ALT_CLASS)
-CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")  # markers and Han bigrams, the strip runs only if one is selected
+# markers and Han bigrams, the strip runs only if one is selected
+CJK_CLASSES = ("zh", "zht", "yue", "wuu", "ja")
 SMALL_ROWS = 8  # word credits summed in Python up to this many known tokens
 
+# labels, first column per label, aliased (label, column) pairs, Latin strip on
+Selection = tuple[list[str], npt.NDArray[np.intp], list[tuple[int, int]], bool]
 
-def log_probs(counts, n_features, n_classes):
+
+def log_probs(counts: Counts, n_features: int, n_classes: int) -> npt.NDArray[np.float16]:
     """Add-one smoothed NB log-probabilities (features, classes) as float16, one class at a time."""
-    bounds = np.searchsorted(counts.index, np.arange(n_classes + 1) * n_features).tolist()
+    bounds = np.searchsorted(counts.cells, np.arange(n_classes + 1) * n_features).tolist()
     spans = list(pairwise(bounds))
-    log_total = np.log(n_features + np.array([counts.values[a:b].sum() for a, b in spans], dtype=np.int64))
+    log_total = np.log(
+        n_features + np.array([counts.values[a:b].sum() for a, b in spans], dtype=np.int64)
+    )
     ptc = np.empty((n_features, n_classes), dtype=np.float16)
     ptc[:] = (-log_total).astype(np.float16)  # log(1 + 0) - log_total
     for c, (a, b) in enumerate(spans):
-        ptc[counts.index[a:b] - c * n_features, c] = np.log(1.0 + counts.values[a:b]) - log_total[c]
+        ptc[counts.cells[a:b] - c * n_features, c] = np.log(1.0 + counts.values[a:b]) - log_total[c]
     return ptc
 
 
-def strip_latin(decoded, han):
+def strip_latin(decoded: str, han: int) -> str | None:
     """*decoded* minus Latin runs at 1 to LATIN_STRIP_RATIO letters per Han char (they pull zh to wuu), else None."""
     cap = LATIN_STRIP_RATIO * han
-    if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:  # stops past cap
-        return LATIN_RUN_RE.sub('', decoded)
+    # stops past cap
+    if han and 0 < sum(1 for _ in islice(LATIN_RE.finditer(decoded), cap + 1)) <= cap:
+        return LATIN_RUN_RE.sub("", decoded)
     return None
 
 
-def _load_identifier(model_path=None, norm_probs=False, langs=None):
+def _load_identifier(
+    model_path: StrPath | None = None, norm_probs: bool = False, langs: Iterable[str] | None = None
+) -> "LanguageIdentifier":
     identifier = LanguageIdentifier.from_modelpath(model_path or MODEL_FILE, norm_probs=norm_probs)
     if langs:
         identifier.set_languages(langs)
     return identifier
 
 
-def _get_identifier(model_path=None, norm_probs=False, langs=None):
+def _get_identifier(
+    model_path: StrPath | None = None, norm_probs: bool = False, langs: Iterable[str] | None = None
+) -> "LanguageIdentifier":
     """Module identifier, loaded on first use (also the batch pool initializer:
     forked workers inherit the parent's, spawned ones load their own)."""
     global IDENTIFIER
     if IDENTIFIER is None:
-        LOGGER.debug('initializing identifier')
+        LOGGER.debug("initializing identifier")
         IDENTIFIER = _load_identifier(model_path, norm_probs, langs)
     return IDENTIFIER
 
 
-def set_languages(langs=None):
-    return _get_identifier().set_languages(langs)
+def set_languages(langs: Iterable[str] | None = None) -> None:
+    _get_identifier().set_languages(langs)
 
 
-def classify(instance):
+def classify(instance: str | bytes) -> tuple[str, float]:
     return _get_identifier().classify(instance)
 
 
-def rank(instance):
+def rank(instance: str | bytes) -> list[tuple[str, float]]:
     return _get_identifier().rank(instance)
 
 
-def _process_file(path, dist=False):
-    with open(path, 'rb') as f:
-        text = f.read()
-    return path, (rank(text) if dist else classify(text))
+def _classify_file(path: str) -> tuple[str, tuple[str, float]]:
+    with open(path, "rb") as f:
+        return path, classify(f.read())
+
+
+def _rank_file(path: str) -> tuple[str, list[tuple[str, float]]]:
+    with open(path, "rb") as f:
+        return path, rank(f.read())
 
 
 class LanguageIdentifier:
-    __slots__ = ['_dfa', '_groups', '_model', '_norm_probs', '_ptc', '_sel', '_words',
-                 'min_confidence']
+    __slots__ = [
+        "_dfa",
+        "_groups",
+        "_model",
+        "_norm_probs",
+        "_ptc",
+        "_sel",
+        "_words",
+        "min_confidence",
+    ]
+    _dfa: DFA
+    _groups: dict[str, list[int]]  # label -> columns
+    _model: Model
+    _norm_probs: bool
+    _ptc: npt.NDArray[np.float16]
+    _sel: Selection
+    _words: tuple[dict[str, int], IntArray, IntArray, FloatArray]
+    min_confidence: float | None
 
     @classmethod
-    def from_modelpath(cls, path, *args, **kwargs):
-        return cls(load_model(path), *args, **kwargs)
+    def from_modelpath(
+        cls, path: StrPath, norm_probs: bool = False, min_confidence: float | None = None
+    ) -> "LanguageIdentifier":
+        return cls(load_model(path), norm_probs, min_confidence)
 
     @classmethod
-    def from_model_file(cls, model_file, *args, **kwargs):
+    def from_model_file(
+        cls, model_file: StrPath, norm_probs: bool = False, min_confidence: float | None = None
+    ) -> "LanguageIdentifier":
         """0.4.0 API: relative to the package directory."""
-        return cls.from_modelpath(MODEL_DIR / model_file, *args, **kwargs)
+        return cls.from_modelpath(MODEL_DIR / model_file, norm_probs, min_confidence)
 
-    def __init__(self, model, norm_probs=False, min_confidence=None):
+    def __init__(
+        self, model: Model, norm_probs: bool = False, min_confidence: float | None = None
+    ) -> None:
         if min_confidence is not None and not norm_probs:
             raise ValueError("min_confidence requires norm_probs=True")
         self.min_confidence = min_confidence
         self._ptc = log_probs(model.counts, len(model.features), len(model.pc))
         self._dfa = build_dfa(model.features)
-        self._model = model._replace(counts=None, features=None)  # ptc and the DFA replace them
+        empty = np.empty(0, dtype=np.int64)  # ptc, the DFA and the word index replace these
         w = model.words
-        index = {tok: i for i, tok in enumerate(w.vocab.decode('utf8').split('\n'))}
+        self._model = model._replace(
+            counts=Counts(empty, empty), features=[], words=w._replace(vocab=b"")
+        )
+        index = {tok: i for i, tok in enumerate(w.vocab.decode("utf8").split("\n"))}
         self._words = (index, w.indptr, w.cols, w.vals)
         self._norm_probs = norm_probs
-        self._groups = {}  # label -> columns
+        self._groups = {}
         for i, c in enumerate(model.classes):
             self._groups.setdefault(c, []).append(i)
         self.set_languages(None)
 
-    def set_languages(self, langs=None):
+    def set_languages(self, langs: Iterable[str] | None = None) -> None:
         """Restrict classification to *langs* (ISO 639 codes), or reset to all."""
         LOGGER.debug("restricting languages to: %s", langs)
         wanted = self._groups.keys() if langs is None else set(langs)
@@ -180,13 +229,14 @@ class LanguageIdentifier:
         cols = [self._groups[c] for c in labels]
         dupes = [(k, j) for k, g in enumerate(cols) for j in g[1:]]
         strip = not set(CJK_CLASSES).isdisjoint(labels)
-        self._sel = (labels, np.array([g[0] for g in cols]), dupes, strip)  # one store: thread-safe swap
+        # one store: thread-safe swap
+        self._sel = (labels, np.array([g[0] for g in cols]), dupes, strip)
 
     @property
-    def labels(self):
+    def labels(self) -> list[str]:
         return self._sel[0]
 
-    def _raw_score(self, text):
+    def _raw_score(self, text: bytes) -> FloatArray | None:
         """NB log-posterior from the DFA walk's sparse feature counts, None if featureless."""
         visits = visit_counts(self._dfa, text)
         if not visits:
@@ -195,12 +245,13 @@ class LanguageIdentifier:
         counts = np.fromiter(visits.values(), dtype=np.float32, count=len(visits))
         return np.log1p(counts) @ self._ptc.take(idx, axis=0) + self._model.pc
 
-    def _word_credit(self, decoded, han):
+    def _word_credit(self, decoded: str, han: int) -> FloatArray | None:
         """Summed table credits over the distinct known tokens, per column."""
         index, indptr, cols, vals = self._words
         tokens = TOKEN_RE.findall(decoded) + (HAN_PAIR_RE.findall(decoded) if han else [])
-        rows = set(map(index.get, tokens))
-        rows.discard(None)
+        found = set(map(index.get, tokens))
+        found.discard(None)
+        rows = cast("set[int]", found)
         if not rows:
             return None
         if len(rows) <= SMALL_ROWS:  # numpy fixed costs dominate a few rows
@@ -216,14 +267,14 @@ class LanguageIdentifier:
         pos = np.arange(ends[-1]) + np.repeat(starts - ends + lens, lens)  # entries of the rows
         return np.bincount(cols[pos], weights=vals[pos], minlength=len(self._model.pc))
 
-    def _decide(self, text, sel=None):
+    def _decide(self, text: str | bytes, sel: Selection | None = None) -> FloatArray:
         """Scores in *sel* label order, probabilities under norm_probs."""
         labels, first, dupes, strip = sel or self._sel
         data, decoded = normalize(text)
         han = len(HAN_RE.findall(decoded))
         if strip and (stripped := strip_latin(decoded, han)) is not None:
-            decoded, data = stripped, stripped.encode('utf8', errors='surrogatepass')
-        text = b' ' + data + b' '  # padding lets boundary n-grams fire on short input
+            decoded, data = stripped, stripped.encode("utf8", errors="surrogatepass")
+        text = b" " + data + b" "  # padding lets boundary n-grams fire on short input
         scores = self._raw_score(text)
         credit = self._word_credit(decoded, han)
         if scores is None:
@@ -243,40 +294,63 @@ class LanguageIdentifier:
             out /= out.sum()
         return out
 
-    def classify(self, text):
+    def classify(self, text: str | bytes) -> tuple[str, float]:
         """Return *(language, confidence)* for *text* (str or UTF-8 bytes)."""
         sel = self._sel
         scores = self._decide(text, sel)
         i = int(scores.argmax())
         conf = float(scores[i])
         if self.min_confidence is not None and conf < self.min_confidence:
-            return 'und', conf
+            return "und", conf
         return sel[0][i], conf
 
-    def rank(self, text):
+    def rank(self, text: str | bytes) -> list[tuple[str, float]]:
         """All languages by likelihood, best first."""
         sel = self._sel
-        return sorted(zip(sel[0], self._decide(text, sel).tolist()), key=itemgetter(1), reverse=True)
+        return sorted(
+            zip(sel[0], self._decide(text, sel).tolist()), key=itemgetter(1), reverse=True
+        )
 
 
-def _build_parser():
+def _build_parser() -> "argparse.ArgumentParser":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-s', '--serve', action='store_true', help='launch web service')
-    parser.add_argument('--host', help='host/ip to bind to')
-    parser.add_argument('--port', default=9008, type=int, help='port to listen on')
-    parser.add_argument('-v', action='count', dest='verbosity', help='increase verbosity (repeat for greater effect)')
-    parser.add_argument('-m', dest='model', help='load model from file')
-    parser.add_argument('-l', '--langs', help='comma-separated set of target ISO639 language codes (e.g en,de)')
-    parser.add_argument('-b', '--batch', action='store_true', help='read file paths from stdin and classify in parallel')
-    parser.add_argument('-d', '--dist', action='store_true', help='show full distribution over languages')
-    parser.add_argument('--line', action='store_true', help='process pipes line-by-line rather than as a document')
-    parser.add_argument('-n', '--normalize', action='store_true', help='normalize confidence scores to probability values')
+    parser.add_argument("-s", "--serve", action="store_true", help="launch web service")
+    parser.add_argument("--host", help="host/ip to bind to")
+    parser.add_argument("--port", default=9008, type=int, help="port to listen on")
+    parser.add_argument(
+        "-v",
+        action="count",
+        dest="verbosity",
+        help="increase verbosity (repeat for greater effect)",
+    )
+    parser.add_argument("-m", dest="model", help="load model from file")
+    parser.add_argument(
+        "-l", "--langs", help="comma-separated set of target ISO639 language codes (e.g en,de)"
+    )
+    parser.add_argument(
+        "-b",
+        "--batch",
+        action="store_true",
+        help="read file paths from stdin and classify in parallel",
+    )
+    parser.add_argument(
+        "-d", "--dist", action="store_true", help="show full distribution over languages"
+    )
+    parser.add_argument(
+        "--line", action="store_true", help="process pipes line-by-line rather than as a document"
+    )
+    parser.add_argument(
+        "-n",
+        "--normalize",
+        action="store_true",
+        help="normalize confidence scores to probability values",
+    )
     return parser
 
 
-def _run_serve(host, port):
+def _run_serve(host: str | None, port: int) -> None:
     """Serve the WSGI app until interrupted."""
     import socket
     from wsgiref.simple_server import make_server
@@ -293,7 +367,7 @@ def _run_serve(host, port):
         pass
 
 
-def _stdin_paths():
+def _stdin_paths() -> Iterator[str]:
     """Existing file paths, one per stdin line."""
     for line in sys.stdin:
         path = line.strip()
@@ -301,34 +375,35 @@ def _stdin_paths():
             yield path
 
 
-def _run_batch(identifier, options):
+def _run_batch(identifier: "LanguageIdentifier", options: "argparse.Namespace") -> None:
     """Classify the file paths on stdin in parallel, as CSV on stdout."""
     import csv
     import multiprocessing as mp
-    from functools import partial
 
-    writer = csv.writer(sys.stdout, lineterminator='\n')
-    ctx = mp.get_context('fork') if sys.platform == 'darwin' else mp
-    with ctx.Pool(processes=mp.cpu_count(),
-                  initializer=_get_identifier,
-                  initargs=(options.model, options.normalize, identifier.labels)) as pool:
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
+    with ctx.Pool(
+        processes=mp.cpu_count(),
+        initializer=_get_identifier,
+        initargs=(options.model, options.normalize, identifier.labels),
+    ) as pool:
         if options.dist:
             header = identifier.labels
-            writer.writerow(['path', 'language'] + header)
-            for path, ranking in pool.imap_unordered(partial(_process_file, dist=True), _stdin_paths()):
+            writer.writerow(["path", "language"] + header)
+            for path, ranking in pool.imap_unordered(_rank_file, _stdin_paths()):
                 scores = dict(ranking)
                 writer.writerow([path, ranking[0][0]] + [scores[c] for c in header])
         else:
-            for path, (lang, conf) in pool.imap_unordered(_process_file, _stdin_paths()):
+            for path, (lang, conf) in pool.imap_unordered(_classify_file, _stdin_paths()):
                 writer.writerow((path, lang, conf))
 
 
-def _run_stdin(process, line_mode):
+def _run_stdin(process: Callable[[str], object], line_mode: bool) -> None:
     """Interactive prompt on a tty, otherwise classify piped input."""
     if sys.stdin.isatty():
         while True:
             try:
-                print(">>>", end=' ')
+                print(">>>", end=" ")
                 text = input()
             except (KeyboardInterrupt, EOFError):
                 break
@@ -340,7 +415,7 @@ def _run_stdin(process, line_mode):
         print(process(sys.stdin.read()))
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     global IDENTIFIER
 
     parser = _build_parser()

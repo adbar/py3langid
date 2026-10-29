@@ -16,9 +16,11 @@ History
 * Chinese trained as two script classes folded into ``zh``
 * Input lowercased as in training, space-padded at inference
 * Invalid UTF-8 input lowercased too: all-caps Latin-1 1% to 99%
+* Invalid UTF-8 input keeps its last bytes (were cut as a partial codepoint)
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
 * ``set_languages`` thread-safe, ``labels`` read-only
 * faster classification (~5%, 2-word input ~20%)
+* Type annotations (``py.typed``)
 * Training: one command gathers and cleans the corpus and writes
   ``MANIFEST.json``
 * Training: model-free cleaning (``clean``), ``verify`` removed
@@ -34,6 +36,7 @@ Breaking:
 * 0.4.0 models rejected, retrain with ``py3langid.train.train``
 * ``modelio.expand_nextmove`` and CLI ``-u/--url``, ``-r/--remote`` removed
 * ``sdh`` dropped (138 languages)
+* Web service: POST without ``q`` returns 400 (was the raw body)
 
 0.4.0
 -----

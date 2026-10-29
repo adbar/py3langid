@@ -1,6 +1,7 @@
 """Per-source language code tables for the corpus gatherers."""
 
 # The gathered languages, with ISO 639-3 codes for Tatoeba and topup.
+# fmt: off
 ISO3 = {
     "af": "afr", "am": "amh", "an": "arg", "ar": "ara", "as": "asm", "az": "aze",
     "arz": "arz", "ary": "ary",
@@ -39,17 +40,21 @@ ISO3 = {
     "fuv": "fuv", "gcr": "gcr", "gom": "gom", "grc": "grc",
     "gug": "gug", "guw": "guw", "hbo": "hbo", "kik": "kik",
 }
+# fmt: on
 CC100_CODE = {"zh": "zh-Hans", "zht": "zh-Hant"}  # zht: Traditional class of zh
 # cc100 has no data for: tt, ba, vec, tk, sn, st, nso, kab, crh
 # nb is not gathered: it duplicated 'no' (Bokmål) and the two classes split
 # the same language arbitrarily. Tatoeba nob feeds 'no' (decision 2026-08-26).
 WIKI_CODE = {
     "yue": "zh_yue",  # Cantonese wiki is at zh-yue.wikipedia.org
-    "gug": "gn", "kik": "ki", "fuv": "ff",  # batch 4
+    "gug": "gn",
+    "kik": "ki",
+    "fuv": "ff",  # batch 4
 }
 
 # Leipzig Corpora Collection: lang -> archive name (news preferred, wiki fallback).
-# Scanned 2026-08-25; 7 langs have no Leipzig corpus (dz, km, ku, lo, rw, xh, zu).
+# Scanned 2026-08-25. 7 langs have no Leipzig corpus (dz, km, ku, lo, rw, xh, zu).
+# fmt: off
 LEIPZIG_NAME = {
     "af": "afr_news_2020_30K", "am": "amh_wikipedia_2021_30K",
     "arz": "arz_wikipedia_2021_100K",
@@ -106,3 +111,4 @@ LEIPZIG_NAME = {
     "wuu": "wuu_wikipedia_2021_30K",
     "zh": "zho_news_2020_300K",
 }
+# fmt: on

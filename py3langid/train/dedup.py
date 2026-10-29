@@ -1,6 +1,7 @@
 """Cross-domain line dedup per language, URLs and digits masked so templated stubs count
 as one (first occurrence kept, blank lines kept). Eval-set lines are dropped too.
 Docs left without text are dropped."""
+
 import re
 from collections import defaultdict
 from hashlib import blake2b
@@ -13,17 +14,18 @@ from .common import drop, walk_corpus
 
 DIGITS = re.compile(rb"\d+")
 URL = re.compile(rb"https?://\S+")
-EVAL_LINES = Path(__file__).with_name("eval_lines.npy")  # line_hash of eval lines found in the corpus
+# line_hash of eval lines found in the corpus
+EVAL_LINES = Path(__file__).with_name("eval_lines.npy")
 
 
-def line_hash(line):
+def line_hash(line: bytes) -> int:
     key = normalize(line)[1].strip().encode("utf8", errors="surrogatepass")
     return int.from_bytes(blake2b(key, digest_size=8).digest(), "little")
 
 
-def dedup(corpus):
+def dedup(corpus: str | Path) -> int:
     """Returns lines removed."""
-    seen = defaultdict(set)
+    seen: defaultdict[str, set[bytes]] = defaultdict(set)
     evals = set(np.load(EVAL_LINES).tolist())
     removed, empty = 0, []
     for _domain, lang, path in walk_corpus(corpus, skip_langs=("zxx",)):
@@ -42,4 +44,3 @@ def dedup(corpus):
         removed += len(lines) - len(kept)
     drop(corpus, empty)
     return removed
-

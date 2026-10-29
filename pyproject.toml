@@ -52,7 +52,7 @@ packages = ["py3langid"]
 version = {attr = "py3langid.__version__"}
 
 [tool.setuptools.package-data]
-py3langid = ["data/model.npz.xz"]
+py3langid = ["data/model.npz.xz", "py.typed"]
 
 [project.scripts]
 langid = "py3langid.langid:main"
@@ -66,9 +66,9 @@ langid = "py3langid.langid:main"
 [dependency-groups]
 dev = [
     "mypy==2.4.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
-    "ruff==0.17.1",
+    "ruff==0.17.3",
 ]
 
 [tool.pytest.ini_options]
@@ -76,6 +76,20 @@ testpaths = ["tests", "README.rst"]
 addopts = "--doctest-glob=README.rst"
 doctest_optionflags = "NUMBER"
 
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I", "UP"]
+
+[tool.mypy]
+strict = true
+
 [[tool.mypy.overrides]]
 module = ["datasets", "huggingface_hub"]  # optional training dependencies
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]  # test functions stay unannotated
+disallow_untyped_defs = false
+disallow_untyped_calls = false
