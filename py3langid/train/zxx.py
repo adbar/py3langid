@@ -11,22 +11,14 @@ from .common import cap_bytes
 
 DOCS_PER_DOMAIN = 300
 DOMAIN_SEEDS = {"wiki": 1, "cc100": 2}
+SYMBOLS = ((0x2200, 0x23FF), (0x2500, 0x27BF), (0x1F300, 0x1F5FF))
 
 GENRES: tuple[Callable[[random.Random, int], str], ...] = (
     lambda rng, n: " ".join(str(rng.randint(0, 10 ** rng.randint(1, 9))) for _ in range(8)),
     lambda rng, n: "".join(rng.choice("!@#$%^&*()_+-=[]{};:,.<>/?|~`\"'\\") for _ in range(n)),
     lambda rng, n: "".join(rng.choice(string.ascii_letters + " ") for _ in range(n)),
     lambda rng, n: "".join(
-        chr(
-            rng.choice(
-                [
-                    rng.randint(0x2200, 0x23FF),
-                    rng.randint(0x2500, 0x27BF),
-                    rng.randint(0x1F300, 0x1F5FF),
-                ]
-            )
-        )
-        for _ in range(n // 2)
+        chr(rng.choice([rng.randint(*r) for r in SYMBOLS])) for _ in range(n // 2)
     ),
     lambda rng, n: base64.b64encode(rng.randbytes(n)).decode(),
     lambda rng, n: rng.randbytes(n // 2).hex(),
