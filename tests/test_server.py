@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 from unittest.mock import MagicMock
+from urllib.parse import quote_plus
 
 import pytest
 
@@ -56,10 +57,29 @@ def test_invalid_path(path):
     assert status == "404 Not Found"
 
 
+RU = "Это русский текст для проверки"
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        ("GET", {"query": "q=" + quote_plus(RU)}),
+        ("GET", {"query": "q=" + RU.encode().decode("latin-1")}),  # raw bytes, as WSGI passes them
+        ("POST", {"body": ("q=" + quote_plus(RU)).encode()}),
+        ("POST", {"body": b"q=" + RU.encode()}),
+    ],
+)
+def test_non_ascii(method, kwargs):
+    """percent-encoded or raw UTF-8 (parse_qs on bytes is ASCII-only on Python 3.10)"""
+    _, payload, _ = _request("/detect", method, **kwargs)
+    assert payload["responseData"]["language"] == "ru"
+
+
 def test_no_query_string():
     status, payload, _ = _request("/detect")
     assert status == "400 Bad Request"
     assert payload["responseData"] is None
+    assert payload["responseDetails"] == "Missing q parameter"
 
 
 def test_get_missing_q_param():
@@ -67,9 +87,18 @@ def test_get_missing_q_param():
     assert status == "400 Bad Request"
 
 
-def test_post_missing_q_param():
-    status, _, _ = _request("/detect", "POST", body=b"x=hello")
+@pytest.mark.parametrize("body", [b"x=hello", b"This is a test", b'{"q": "This is a test"}'])
+def test_post_missing_q_param(body):
+    status, payload, _ = _request("/detect", "POST", body=body)
     assert status == "400 Bad Request"
+    assert payload["responseDetails"] == "Missing q parameter"
+
+
+@pytest.mark.parametrize("method,kwargs", [("GET", {"query": "q="}), ("POST", {"body": b"q="})])
+def test_empty_q_param(method, kwargs):
+    status, payload, _ = _request("/detect", method, **kwargs)
+    assert status == "400 Bad Request"
+    assert payload["responseDetails"] == "No data provided"
 
 
 def test_content_type():
@@ -78,8 +107,9 @@ def test_content_type():
 
 
 def test_missing_content_length():
-    status, _, _ = _request("/detect", "POST", body=b"q=test", content_length=None)
+    status, payload, _ = _request("/detect", "POST", body=b"q=test", content_length=None)
     assert status == "400 Bad Request"
+    assert payload["responseDetails"] == "No data provided"
 
 
 def test_invalid_content_length():

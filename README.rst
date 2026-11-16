@@ -135,7 +135,7 @@ and PUT with the raw text as body:
 
 .. code-block:: bash
 
-    $ curl -d "q=This is a test" localhost:9008/detect
+    $ curl --data-urlencode "q=This is a test" localhost:9008/detect
 
 For production, use ``py3langid.server:application`` under a WSGI server.
 

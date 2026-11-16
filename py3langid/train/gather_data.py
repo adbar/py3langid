@@ -56,7 +56,7 @@ def fetch(url: str, headers: dict[str, str] | None = None, retries: int = 3) -> 
 
 
 def fetch_cached(url: str, cache_path: Path, headers: dict[str, str] | None = None) -> BinaryIO:
-    """Download to cache_path once; return open binary handle."""
+    """Download to cache_path once, return an open binary handle."""
     if not cache_path.exists():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache_path.with_name(cache_path.name + ".tmp")
@@ -161,7 +161,7 @@ def latest_cirrus_date() -> str:
     html = fetch(CIRRUS_INDEX).read().decode()
     dates: list[str] = sorted(set(re.findall(r'href="(\d{8})/"', html)))
     if not dates:
-        raise RuntimeError(f"no dumps listed at {CIRRUS_INDEX}; pass --wiki-date")
+        raise RuntimeError(f"no dumps listed at {CIRRUS_INDEX}, pass --wiki-date")
     return dates[-2] if len(dates) > 1 else dates[-1]
 
 

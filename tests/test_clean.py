@@ -210,7 +210,7 @@ def test_dedup_drops_docs_left_without_text(tmp_path):
 
 
 def test_ensure_zxx_deterministic_and_idempotent(tmp_path):
-    """fixed seeds give the same docs on every run; a filled corpus is left alone"""
+    """fixed seeds give the same docs on every run, a filled corpus is left alone"""
     assert ensure_zxx(tmp_path) == DOCS_PER_DOMAIN * len(DOMAIN_SEEDS)
     assert ensure_zxx(tmp_path) == 0
     docs = [p.read_bytes() for p in sorted(tmp_path.glob("*/zxx/*.txt"))]

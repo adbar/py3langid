@@ -102,10 +102,8 @@ def build_shards(items: Iterable[Item], shard_dir: str, jobs: int = 1) -> list[I
     return [cell[:3] for cell in cells]
 
 
-_TOKENS, _DOCFREQ = 1, 2  # shard records after the key
-
-
 def _load(shard_path: str, part: int) -> Any:
+    """Shard record after the key: 1 tokens, 2 docfreq."""
     with open(shard_path, "rb") as f:
         for _ in range(part):
             marshal.load(f)
@@ -113,11 +111,11 @@ def _load(shard_path: str, part: int) -> Any:
 
 
 def load_tokens(shard_path: str) -> Tokens:
-    return cast("Tokens", _load(shard_path, _TOKENS))
+    return cast("Tokens", _load(shard_path, 1))
 
 
 def load_docfreq(shard_path: str) -> DocFreq:
-    return cast("DocFreq", _load(shard_path, _DOCFREQ))
+    return cast("DocFreq", _load(shard_path, 2))
 
 
 def _merge_chunk(chunk: Sequence[Item]) -> Counter[bytes]:

@@ -156,7 +156,7 @@ def test_han_pair_range():
 
 
 def test_unique_labels(identifier):
-    """ALT_CLASS gives sr/uz/zh two columns each; the public view has one"""
+    """ALT_CLASS gives sr/uz/zh two columns each, the public view has one"""
     assert len(identifier._model.classes) > len(identifier.labels)
     assert len(identifier.labels) == len(set(identifier.labels))
     for dup in ("sr", "uz", "zh"):
@@ -168,6 +168,12 @@ def test_unique_labels(identifier):
     assert identifier.rank("ovo je tekst za probu") == [
         ("sr", pytest.approx(identifier.classify("ovo je tekst za probu")[1]))
     ]
+
+
+def test_labels_is_a_copy(identifier):
+    """reordering the returned list leaves the selection intact"""
+    identifier.labels.sort()
+    assert identifier.classify("This is an English sentence for testing.")[0] == "en"
 
 
 def test_rank_takes_max_over_aliased_columns(identifier):
@@ -446,7 +452,7 @@ def test_log_probs():
 
 
 def test_cjk_tokens_are_single_characters(identifier):
-    """a CJK character in the table is credited wherever it occurs; Latin words stay whole"""
+    """a CJK character in the table is credited wherever it occurs, Latin words stay whole"""
     assert TOKEN_RE.findall("amazon嘅資料 ok") == ["amazon", "嘅", "資", "料", "ok"]
     assert TOKEN_RE.findall("परमेश्वर বাংলা בְּרֵאשִׁית") == ["परमेश्वर", "বাংলা", "בְּרֵאשִׁית"]
     # marks attach after a letter only: mark-only input has no token, a leading mark is dropped
@@ -468,7 +474,7 @@ def test_shipped_cjk_markers(identifier, norm_identifier):
 
 
 def test_word_table_credit_and_language_restriction(identifier):
-    """a known word adds its credit to its columns; unknown words add nothing"""
+    """a known word adds its credit to its columns, unknown words add nothing"""
     en, fr = identifier.labels.index("en"), identifier.labels.index("fr")
     assert identifier._model.classes.index("en") == en  # single-column labels: same index
     plain = _variant(identifier, {})

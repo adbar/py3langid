@@ -47,9 +47,10 @@ CC100_CODE = {"zh": "zh-Hans", "zht": "zh-Hant"}  # zht: Traditional class of zh
 # the same language arbitrarily. Tatoeba nob feeds 'no' (decision 2026-08-26).
 WIKI_CODE = {
     "yue": "zh_yue",  # Cantonese wiki is at zh-yue.wikipedia.org
+    # batch 4
     "gug": "gn",
     "kik": "ki",
-    "fuv": "ff",  # batch 4
+    "fuv": "ff",
 }
 
 # Leipzig Corpora Collection: lang -> archive name (news preferred, wiki fallback).

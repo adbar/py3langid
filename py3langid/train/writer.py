@@ -15,7 +15,7 @@ SCRIPT_QUOTA = {"wuu": hant_majority}
 
 
 class DocWriter:
-    """Number files into out_dir under per-dir caps and script quotas; split-script
+    """Number files into out_dir under per-dir caps and script quotas. Split-script
     langs route to the alt dir, split=False skips the other script instead.
     Docs failing their class doc rule are skipped, so cells fill with passing docs."""
 
@@ -74,7 +74,7 @@ def valid_doc(doc: bytes) -> bytes | None:
 
 
 def pack_docs(rows: Iterable[str | bytes]) -> Iterator[bytes]:
-    """Pack small rows (str or bytes) into ~PACK_TARGET-byte docs; large rows pass through.
+    """Pack small rows (str or bytes) into ~PACK_TARGET-byte docs, large rows pass through.
     A row of MIN_DOC bytes passes alone, so non-Latin scripts get short docs.
     Packing everything to DOC_CAP was measured worse on CommonLID (-0.13)."""
     buf: list[bytes] = []

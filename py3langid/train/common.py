@@ -2,7 +2,6 @@
 
 import multiprocessing as mp
 import re
-import sys
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from functools import partial
@@ -116,7 +115,7 @@ def pmap_chunks(
 def MapPool(processes: int = 1) -> Iterator[Callable[..., Iterator[Any]]]:
     """Process pool that falls back to serial map when processes <= 1."""
     if processes > 1:
-        ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
+        ctx = mp.get_context("fork" if "fork" in mp.get_all_start_methods() else None)
         with ctx.Pool(processes) as pool:
             yield pool.imap_unordered
     else:

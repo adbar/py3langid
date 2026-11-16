@@ -70,7 +70,7 @@ def test_gather_domain_skips_failing_lang(tmp_path, capsys):
 
 
 def test_tatoeba_docs_pack_per_lang(tmp_path, monkeypatch):
-    """tatoeba packs sentences per lang; docs then pass the validity gate like every source"""
+    """tatoeba packs sentences per lang, docs then pass the validity gate like every source"""
     # two "languages": eng packs 1 long sentence per doc, deu 1 stub per doc
     tar = _tatoeba_tar([("1", "eng", "L" * (DOC_CAP + 500))] * 3 + [("2", "deu", "tiny")] * 3)
     monkeypatch.setattr(gather_data, "fetch_cached", lambda *a, **k: io.BytesIO(tar))

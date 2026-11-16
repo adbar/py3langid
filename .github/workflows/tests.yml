@@ -27,7 +27,7 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy py3langid tests
+      - run: uv run mypy
 
   package:
     runs-on: ubuntu-latest

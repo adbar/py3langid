@@ -19,6 +19,7 @@ History
 * Invalid UTF-8 input keeps its last bytes (were cut as a partial codepoint)
 * Featureless input uniform under ``norm_probs`` (was ``sr``-biased)
 * ``set_languages`` thread-safe, ``labels`` read-only
+* Web service: non-ASCII text fixed (POST on Python 3.10, raw UTF-8 in GET)
 * faster classification (~5%, 2-word input ~20%)
 * Type annotations (``py.typed``)
 * Training: one command gathers and cleans the corpus and writes

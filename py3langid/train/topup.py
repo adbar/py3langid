@@ -113,4 +113,4 @@ def gather_topup(out_root: Path, langs: list[str], max_docs: int, jobs: int = 4)
                 marker.unlink(missing_ok=True)
             elif marker.parent.is_dir():
                 marker.touch()
-    print(f"topup done; still thin: {needy(out_root, classes)}")
+    print(f"topup done, still thin: {needy(out_root, classes)}")

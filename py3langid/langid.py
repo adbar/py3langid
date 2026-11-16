@@ -30,7 +30,7 @@ RAW_FLOOR = float(np.finfo(np.float32).min)  # finite floor for featureless inpu
 
 
 def normalize(text: str | bytes) -> tuple[bytes, str]:
-    """(lowercased NFC UTF-8 bytes, str) of *text*; bytes lose a partial trailing codepoint,
+    """(lowercased NFC UTF-8 bytes, str) of *text*. Bytes lose a partial trailing codepoint,
     undecodable bytes pass through. Shared train/inference contract (train.common.read_doc)."""
     if isinstance(text, bytes):
         raw = text
@@ -234,7 +234,7 @@ class LanguageIdentifier:
 
     @property
     def labels(self) -> list[str]:
-        return self._sel[0]
+        return list(self._sel[0])
 
     def _raw_score(self, text: bytes) -> FloatArray | None:
         """NB log-posterior from the DFA walk's sparse feature counts, None if featureless."""
@@ -381,7 +381,7 @@ def _run_batch(identifier: "LanguageIdentifier", options: "argparse.Namespace") 
     import multiprocessing as mp
 
     writer = csv.writer(sys.stdout, lineterminator="\n")
-    ctx = mp.get_context("fork" if sys.platform == "darwin" else None)
+    ctx = mp.get_context("fork" if "fork" in mp.get_all_start_methods() else None)
     with ctx.Pool(
         processes=mp.cpu_count(),
         initializer=_get_identifier,
