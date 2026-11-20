@@ -1,4 +1,5 @@
 """Topup: eval sub-corpora never enter training, dataset revisions are pinned."""
+
 import sys
 import types
 
@@ -29,23 +30,42 @@ def test_repo_configs_pinned(monkeypatch):
         seen.append(revision)
         return ["kik_Latn/train.parquet", "README.md", "data/sot_Latn/x.parquet"]
 
-    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(list_repo_files=list_repo_files))
+    monkeypatch.setitem(
+        sys.modules, "huggingface_hub", types.SimpleNamespace(list_repo_files=list_repo_files)
+    )
     assert topup._repo_configs(topup.GLOTCC_REPO) == {"kik": {"kik_Latn"}, "sot": {"sot_Latn"}}
     assert seen == [topup.REVISION[topup.GLOTCC_REPO]]
 
 
 def test_glot_config_picks_the_class_script():
-    configs = {"cmn": {"cmn_Hans", "cmn_Hant"}, "uzn": {"uzn_Latn", "uzn_Cyrl"},
-               "deu": {"deu_Latn"}, "srp": {"srp_Cyrl", "srp_Latn"}, "fra": {"fra_Latn", "fra_Brai"}}
+    configs = {
+        "cmn": {"cmn_Hans", "cmn_Hant"},
+        "uzn": {"uzn_Latn", "uzn_Cyrl"},
+        "deu": {"deu_Latn"},
+        "srp": {"srp_Cyrl", "srp_Latn"},
+        "fra": {"fra_Latn", "fra_Brai"},
+    }
     assert [topup._glot_config(configs, c) for c in ("zh", "zht", "uz", "uzc", "srl", "de")] == [
-        "cmn_Hans", "cmn_Hant", "uzn_Latn", "uzn_Cyrl", "srp_Latn", "deu_Latn"]
+        "cmn_Hans",
+        "cmn_Hant",
+        "uzn_Latn",
+        "uzn_Cyrl",
+        "srp_Latn",
+        "deu_Latn",
+    ]
     assert topup._glot_config(configs, "fr") is None  # ambiguous, no script preference
     assert topup._glot_config(configs, "om") is None
 
 
 def test_needy_counts_domains_with_enough_docs(tmp_path):
-    cells = [("wiki", "de", 50), ("cc100", "de", 50), ("leipzig", "de", 50),
-             ("wiki", "arz", 300), ("tatoeba", "arz", 31), ("leipzig", "arz", 300)]
+    cells = [
+        ("wiki", "de", 50),
+        ("cc100", "de", 50),
+        ("leipzig", "de", 50),
+        ("wiki", "arz", 300),
+        ("tatoeba", "arz", 31),
+        ("leipzig", "arz", 300),
+    ]
     write_corpus(tmp_path, [(d, c, b"x") for d, c, n in cells for _ in range(n)])
     assert topup.needy(tmp_path, ["de", "arz", "pcm", "om"]) == ["arz", "om"]
 

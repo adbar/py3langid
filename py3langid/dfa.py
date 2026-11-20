@@ -2,19 +2,20 @@
 
 from array import array
 from collections import Counter
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import numpy as np
 
 
 class DFA(NamedTuple):
-    table: bytes     # byte -> class, for bytes.translate
-    nextmove: array  # one row of transitions per state with own edges, flat
-    rowbase: list    # state -> offset of its row
-    output: list     # state -> longest feature ending there, or -1
+    table: bytes  # byte -> class, for bytes.translate
+    nextmove: "array[int]"  # one row of transitions per state with own edges, flat
+    rowbase: list[int]  # state -> offset of its row
+    output: list[int]  # state -> longest feature ending there, or -1
 
 
-def byte_classes(data):
+def byte_classes(data: bytes) -> tuple[bytes, int]:
     """(translate table, class count). A byte of *data* is its own class: every state
     reached on it ends in that byte. Other bytes share one class, always the root."""
     used = np.bincount(np.frombuffer(data, np.uint8), minlength=256) > 0
@@ -22,7 +23,7 @@ def byte_classes(data):
     return table, max(table) + 1
 
 
-def build_dfa(features):
+def build_dfa(features: Sequence[bytes]) -> DFA:
     """DFA emitting, at each byte, the index of the longest feature ending there."""
     joined = b"".join(features)
     table, width = byte_classes(joined)
@@ -58,11 +59,12 @@ def build_dfa(features):
     return DFA(table, nextmove, (rowid * width).tolist(), out.tolist())
 
 
-def visit_counts(dfa, text):
+def visit_counts(dfa: DFA, text: bytes) -> Counter[int]:
     """Longest-match feature counts over bytes, for inference and training."""
     nm, rowbase, out = dfa.nextmove, dfa.rowbase, dfa.output
     state = 0
-    counts = Counter([out[state := nm[rowbase[state] + letter]]
-                      for letter in text.translate(dfa.table)])
+    counts = Counter(
+        [out[state := nm[rowbase[state] + letter]] for letter in text.translate(dfa.table)]
+    )
     counts.pop(-1, None)  # no feature ends there
     return counts

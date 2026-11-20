@@ -3,33 +3,51 @@
 import argparse
 import os
 from collections import Counter
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 
-from ..modelio import Model, save_model, sparse_counts
+from ..modelio import IntArray, Model, save_model, sparse_counts
 from .common import ALT_CLASS, COUNT_FLOOR, FEATURES_PER_LANG, walk_corpus
 from .shards import build_shards, count_matrices, merge_docfreq
 from .stages import compute_IG, feature_counts, ngram_select, select_LD_features
 from .words import build_words
 
 
-def _axis(values):
+def _axis(values: Iterable[str]) -> tuple[list[str], IntArray, dict[str, int]]:
     """(names in first-appearance order, count array, name→column) of *values*."""
     counts = Counter(values)
     return list(counts), np.array(list(counts.values())), {n: i for i, n in enumerate(counts)}
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("-m","--model", help="save output to MODEL_DIR", metavar="MODEL_DIR")
-    parser.add_argument("-j","--jobs", type=int, metavar='N', default=min(10, os.cpu_count() or 1), help="spawn N processes (set to 1 for no parallelization)")
-    parser.add_argument("--feats_per_lang", type=int, metavar='N', help="select top N features for each language", default=FEATURES_PER_LANG)
-    parser.add_argument("--shards", metavar="SHARD_DIR", help="n-gram count shard cache (default: CORPUS_DIR.shards)")
+    parser.add_argument("-m", "--model", help="save output to MODEL_DIR", metavar="MODEL_DIR")
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        metavar="N",
+        default=min(10, os.cpu_count() or 1),
+        help="spawn N processes (set to 1 for no parallelization)",
+    )
+    parser.add_argument(
+        "--feats_per_lang",
+        type=int,
+        metavar="N",
+        help="select top N features for each language",
+        default=FEATURES_PER_LANG,
+    )
+    parser.add_argument(
+        "--shards",
+        metavar="SHARD_DIR",
+        help="n-gram count shard cache (default: CORPUS_DIR.shards)",
+    )
     parser.add_argument("corpus", help="read corpus from CORPUS_DIR", metavar="CORPUS_DIR")
 
     args = parser.parse_args(argv)
 
-    model_dir = args.model or os.path.join('.', os.path.basename(args.corpus) + '.model')
+    model_dir = args.model or os.path.join(".", os.path.basename(args.corpus) + ".model")
 
     os.makedirs(model_dir, exist_ok=True)
 
@@ -41,10 +59,10 @@ def main(argv=None):
     domains, domain_dist, domain_index = _axis(d for d, _, _ in items)
 
     for label, names, dist in (("langs", langs, lang_dist), ("domains", domains, domain_dist)):
-        print(f"{label}({len(names)}): " + ' '.join(f"{n}({c})" for n, c in zip(names, dist)))
+        print(f"{label}({len(names)}): " + " ".join(f"{n}({c})" for n, c in zip(names, dist)))
     print(f"identified {len(items)} files")
 
-    shard_dir = args.shards or os.path.normpath(args.corpus) + '.shards'
+    shard_dir = args.shards or os.path.normpath(args.corpus) + ".shards"
     shard_items = build_shards(items, shard_dir, args.jobs)
 
     doc_count = merge_docfreq(shard_items, args.jobs)
@@ -54,20 +72,20 @@ def main(argv=None):
     del doc_count
     print(f"selected {len(features)} DF features")
 
-    cm_lang, cm_domain = count_matrices(
-        shard_items, features, lang_index, domain_index, args.jobs)
+    cm_lang, cm_domain = count_matrices(shard_items, features, lang_index, domain_index, args.jobs)
 
     nonempty = cm_lang.any(0)
     empty = sorted(lang for lang, j in lang_index.items() if not nonempty[j])
     if empty:
-        parser.error(f"no n-grams for {len(empty)} class(es): {empty} "
-                     "-- check for empty or unreadable docs")
+        parser.error(
+            f"no n-grams for {len(empty)} class(es): {empty} -- check for empty or unreadable docs"
+        )
 
     print("computing information gain")
     domain_ig = compute_IG(cm_domain, domain_dist)
     LDidx = select_LD_features(cm_lang, lang_dist, domain_ig, args.feats_per_lang)
     LDfeats = sorted(features[i] for i in LDidx)
-    print(f'selected {len(LDfeats)} features')
+    print(f"selected {len(LDfeats)} features")
 
     nb_classes = [ALT_CLASS.get(lang, lang) for lang in langs]
     nb_pc = np.log(lang_dist)
@@ -85,7 +103,7 @@ def main(argv=None):
     print(f"word table: {len(words.indptr) - 1} tokens, {len(words.cols)} entries")
 
     model = Model(sparse_counts(prod), nb_pc, nb_classes, LDfeats, words)
-    npz_path = os.path.join(model_dir, 'model.npz.xz')
+    npz_path = os.path.join(model_dir, "model.npz.xz")
     save_model(npz_path, model)
     print(f"wrote model to {npz_path} ({os.path.getsize(npz_path)} bytes)")
 
